@@ -36,6 +36,8 @@
 #define MUSE_ROUTELLM_KEY_MAX 128   /* Abacus.ai RouteLLM (ChatLLM) API key */
 
 #define MUSE_MIC_GAIN_MAX 36      /* dB; ES7210 PGA, applied in 3 dB steps */
+#define MUSE_RECORD_TIME_MIN 1
+#define MUSE_RECORD_TIME_MAX 20
 
 typedef enum {
     MUSE_SETTING_VOLUME,
@@ -46,6 +48,7 @@ typedef enum {
     MUSE_SETTING_WIFI,          /* on/off or credentials */
     MUSE_SETTING_BLE,
     MUSE_SETTING_HATCH,
+    MUSE_SETTING_RECORD_TIME,
 } muse_setting_t;
 
 typedef void (*muse_setting_cb_t)(muse_setting_t what);
@@ -58,6 +61,7 @@ bool muse_settings_speaker_on(void);    /* off: replies are shown, not played */
 int muse_settings_mic_gain(void);       /* dB, 0..MUSE_MIC_GAIN_MAX */
 int muse_settings_brightness(void);     /* 10..100 */
 int muse_settings_sleep_s(void);        /* 0 = never */
+int muse_settings_record_time_s(void);   /* 5..20 seconds */
 bool muse_settings_wifi_on(void);
 bool muse_settings_ble_on(void);
 
@@ -74,6 +78,7 @@ void muse_settings_set_speaker_on(bool on);
 void muse_settings_set_mic_gain(int db);
 void muse_settings_set_brightness(int pct);
 void muse_settings_set_sleep_s(int secs);
+void muse_settings_set_record_time_s(int secs);
 void muse_settings_set_wifi_on(bool on);
 void muse_settings_set_ble_on(bool on);
 /* A network name is remembered first among the saved ones and joined now;

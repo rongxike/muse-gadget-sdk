@@ -40,7 +40,7 @@
 
 static const char *TAG = "muse_voice";
 
-#define MAX_SECS 15
+#define MAX_SECS 20
 #define TAIL_FRAMES (MUSE_AUDIO_RATE * 12 / 100)   /* capture lag + poll interval, stops before the release click */
 #define MAX_FRAMES (MUSE_AUDIO_RATE * MAX_SECS)
 #define MIN_HELD_FRAMES (MUSE_AUDIO_RATE * 3 / 10)   /* shorter presses are taps, not speech */
@@ -276,7 +276,8 @@ static bool record(bool barge_in, size_t *held, char *why, size_t cap)
     }
     size_t pre = n;
     bool released = false;
-    size_t stop_at = MAX_FRAMES;
+    size_t max_frames = (size_t)MUSE_AUDIO_RATE * (size_t)muse_settings_record_time_s();
+    size_t stop_at = max_frames < MAX_FRAMES ? max_frames : MAX_FRAMES;
     while (n + MUSE_AUDIO_CHUNK <= stop_at) {
         if (muse_audio_read(s_chunk, MUSE_AUDIO_CHUNK) != ESP_OK) {
             break;
@@ -308,7 +309,7 @@ static bool record(bool barge_in, size_t *held, char *why, size_t cap)
             ESP_LOGI(TAG, "Muse in reach: streaming the note so far");
             go_live();
         }
-        muse_state_set_progress((float)n / MAX_FRAMES);
+        muse_state_set_progress((float)n / stop_at);
         if (!heard && ok && tick) {
             muse_state_set_caption("%s %.1fs", s_live ? "LISTENING" : "RECORDING", (double)n / MUSE_AUDIO_RATE);
         }
@@ -318,7 +319,8 @@ static bool record(bool barge_in, size_t *held, char *why, size_t cap)
          */
         if (!released && got_event(MUSE_PTT_UP)) {
             released = true;
-            stop_at = n + TAIL_FRAMES < MAX_FRAMES ? n + TAIL_FRAMES : MAX_FRAMES;
+            size_t tail_limit = n + TAIL_FRAMES < max_frames ? n + TAIL_FRAMES : max_frames;
+            stop_at = tail_limit < MAX_FRAMES ? tail_limit : MAX_FRAMES;
         }
     }
     muse_state_set_level(0);

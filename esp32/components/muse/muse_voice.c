@@ -291,7 +291,6 @@ static bool record(bool barge_in, size_t *held, char *why, size_t cap)
                 heard = true;
                 muse_state_set_caption("%s", text);
             } else if (ev == MUSE_HATCH_EV_ERROR) {
-                ESP_LOGW(TAG, "muse: %s", text);
                 muse_hatch_turn_cancel();
                 s_live = false;
                 gave_up = true;
@@ -305,7 +304,6 @@ static bool record(bool barge_in, size_t *held, char *why, size_t cap)
         n += MUSE_AUDIO_CHUNK;
         bool tick = n % (MUSE_AUDIO_CHUNK * 5) == 0;
         if (tick && s_rec && !s_live && !gave_up && !s_held_count && muse_hatch_ready()) {
-            ESP_LOGI(TAG, "Muse in reach: streaming the note so far");
             go_live();
         }
         muse_state_set_progress((float)n / MAX_FRAMES);
@@ -324,17 +322,12 @@ static bool record(bool barge_in, size_t *held, char *why, size_t cap)
     muse_state_set_level(0);
     *held = n - pre;
 
-    char tail[160];
-    int tl = 0;
-    size_t shown = st.chunks < 25 ? st.chunks : 25;
-    for (size_t i = st.chunks - shown; i < st.chunks; i++) {
-        tl += snprintf(tail + tl, sizeof(tail) - tl, " %.0f", st.tail_db[i % 25]);
-    }
-    ESP_LOGI(TAG, "end levels:%s", tail);
     float rms_db = st.frames ? 10.0f * log10f((float)(st.acc / st.frames / (32768.0 * 32768.0)) + 1e-10f) : -100.0f;
-    ESP_LOGI(TAG, "recorded %.2fs%s: rms %.1f dBFS, peak %.1f dBFS, floor %.1f dBFS, %d clipped, gain %d dB",
-             (double)n / MUSE_AUDIO_RATE, released ? "" : " (max)", rms_db < -100.0f ? -100.0f : rms_db,
-             20.0 * log10((st.peak + 1) / 32768.0), st.floor_db, st.clipped, muse_settings_mic_gain());
+    if (rms_db > -100.0f) {
+        ESP_LOGI(TAG, "recorded %.2fs%s: rms %.1f dBFS, peak %.1f dBFS, floor %.1f dBFS, %d clipped, gain %d dB",
+                 (double)n / MUSE_AUDIO_RATE, released ? "" : " (max)", rms_db,
+                 20.0 * log10((st.peak + 1) / 32768.0), st.floor_db, st.clipped, muse_settings_mic_gain());
+    }
     return ok;
 }
 
@@ -383,7 +376,6 @@ static bool hatch_reply(bool *delivered)
                 done = *delivered = true;
                 break;
             case MUSE_HATCH_EV_ERROR:
-                ESP_LOGW(TAG, "muse: %s", text);
                 muse_state_set_level(0);
                 go_idle(text);
                 return false;
@@ -392,7 +384,6 @@ static bool hatch_reply(bool *delivered)
             }
         }
         if (got_event(MUSE_PTT_DOWN)) {
-            ESP_LOGI(TAG, "reply interrupted");
             muse_hatch_turn_cancel();
             muse_state_set_level(0);
             return true;
@@ -420,8 +411,6 @@ static bool hatch_reply(bool *delivered)
         }
     }
     muse_state_set_level(0);
-    ESP_LOGI(TAG, "muse reply: %.2fs of audio, %.2fs total", (double)played / MUSE_AUDIO_RATE,
-             (esp_timer_get_time() - t0) / 1e6);
     if (!played) {
         /* No speech (TTS unavailable): leave the reply text up for a moment. */
         vTaskDelay(pdMS_TO_TICKS(2500));
@@ -482,7 +471,6 @@ static void set_resting(bool rest)
     } else {
         pre_reset();
     }
-    ESP_LOGI(TAG, "%s", rest ? "resting: codecs off, Wi-Fi modem sleep" : "awake: codecs on");
 }
 
 /*
@@ -504,8 +492,23 @@ static bool held_on_waking(void)
 
 static void drop_rec(void)
 {
-    free(s_rec);
+    if (!s_rec) {
+        return;
+    }
+    heap_caps_free(s_rec);
     s_rec = NULL;
+}
+
+static void clear_held_notes(void)
+{
+    for (int i = 0; i < s_held_count; i++) {
+        heap_caps_free(s_held[i].pcm);
+        s_held[i].pcm = NULL;
+    }
+    s_held_count = 0;
+    s_waiting = false;
+    s_next_send_us = 0;
+    s_send_backoff_us = RETRY_MIN_US;
 }
 
 #if HOLD_NOTES
@@ -542,8 +545,15 @@ static void hold_rec(bool tried)
         return;
     }
     int16_t *pcm = heap_caps_realloc(s_rec, s_rec_n * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!pcm) {
+        /* Preserve the original allocation so the caller doesn't fail with a
+         * dangling buffer while the note is still being recorded. */
+        drop_rec();
+        go_idle("OUT OF MEMORY");
+        return;
+    }
     s_held[s_held_count++] = (held_note_t){
-        .pcm = pcm ? pcm : s_rec,
+        .pcm = pcm,
         .frames = s_rec_n,
         .at_us = esp_timer_get_time(),
         .tries = tried,
@@ -552,13 +562,16 @@ static void hold_rec(bool tried)
     if (tried) {
         back_off();
     }
-    ESP_LOGI(TAG, "saved a %.1fs note to send later (%d waiting)", (double)s_rec_n / MUSE_AUDIO_RATE, s_held_count);
     go_idle(tried ? "SAVED, WILL TRY AGAIN" : "SAVED, SENDS WHEN ONLINE");
 }
 
 static void drop_oldest(void)
 {
-    free(s_held[0].pcm);
+    if (!s_held_count) {
+        return;
+    }
+    heap_caps_free(s_held[0].pcm);
+    s_held[0].pcm = NULL;
     s_held_count--;
     memmove(s_held, s_held + 1, s_held_count * sizeof(s_held[0]));
     if (!s_held_count) {
@@ -897,7 +910,14 @@ esp_err_t muse_voice_start(QueueHandle_t queue)
 {
     s_queue = queue;
     s_pre = heap_caps_malloc(PRE_CHUNKS * sizeof(pre_chunk_t), MUSE_BIG_CAPS);
-    if (!s_pre || muse_audio_init(muse_settings_volume(), muse_settings_mic_gain()) != ESP_OK) {
+    if (!s_pre) {
+        muse_state_set_mode(MUSE_MODE_ERROR);
+        muse_state_set_caption("AUDIO INIT FAILED");
+        return ESP_ERR_NO_MEM;
+    }
+    if (muse_audio_init(muse_settings_volume(), muse_settings_mic_gain()) != ESP_OK) {
+        heap_caps_free(s_pre);
+        s_pre = NULL;
         muse_state_set_mode(MUSE_MODE_ERROR);
         muse_state_set_caption("AUDIO INIT FAILED");
         return ESP_FAIL;
@@ -907,6 +927,8 @@ esp_err_t muse_voice_start(QueueHandle_t queue)
                                         MUSE_BIG_CAPS) != pdPASS) {
         /* Without the task nothing would ever rest the codecs, which
          * muse_audio_init() left open: on the Watcher that's ~33 mA. */
+        heap_caps_free(s_pre);
+        s_pre = NULL;
         muse_audio_power(false);
         muse_state_set_mode(MUSE_MODE_ERROR);
         muse_state_set_caption("AUDIO INIT FAILED");

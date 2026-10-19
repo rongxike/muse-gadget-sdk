@@ -1137,6 +1137,42 @@ static void image_hide_locked(void)
     xSemaphoreGive(s_image_mutex);
 }
 
+void muse_ui_stop(void)
+{
+    if (!s_ready) {
+        return;
+    }
+    muse_board->display_lock(-1);
+    if (s_frame_timer)
+    {
+        lv_timer_del(s_frame_timer);
+        s_frame_timer = NULL;
+    }
+    image_hide_locked();
+    if (s_image)
+    {
+        lv_obj_del(s_image);
+        s_image = NULL;
+    }
+    if (s_cover)
+    {
+        lv_obj_del(s_cover);
+        s_cover = NULL;
+    }
+    if (s_tv)
+    {
+        lv_obj_del(s_tv);
+        s_tv = NULL;
+    }
+    if (s_settings)
+    {
+        lv_obj_del(s_settings);
+        s_settings = NULL;
+    }
+    s_ready = false;
+    muse_board->display_unlock();
+}
+
 /* Each frame: shows a new image and redraws what the download changed. */
 static void image_sync(void)
 {
@@ -1739,6 +1775,7 @@ static void update_status(muse_mode_t mode, float now)
 }
 
 static volatile bool s_snapshot;
+static lv_timer_t *s_frame_timer;
 #if LV_USE_SNAPSHOT
 static volatile int s_bench_page = -1;
 void muse_ui_bench_page(bool settings)
@@ -1953,7 +1990,7 @@ esp_err_t muse_ui_start(void)
         muse_menu_build(lv_screen_active(), s_w, s_h);
     }
     build_overlays();
-    lv_timer_create(frame_tick, muse_board->frame_ms, NULL);
+    s_frame_timer = lv_timer_create(frame_tick, muse_board->frame_ms, NULL);
     s_ready = true;
     muse_board->display_unlock();
 

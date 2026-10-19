@@ -39,7 +39,7 @@ class EchoEarInputTest(unittest.TestCase):
 #define MUSE_PTT_UP 2
 #define MUSE_MENU_SELECT 1
 static atomic_uint s_touch_talk_events;
-static bool s_talk_down, pending_pair;
+static bool s_touch_talk_down, s_talk_down, pending_pair;
 static int down, up, confirmed;
 static struct { const char *talk_button; bool keyboard, touch_talk; } board = {"screen", false, true};
 typedef int lv_event_t;

@@ -60,13 +60,9 @@ void muse_input_touch_talk(bool pressed)
     if (!pressed) {
         return;
     }
-    if (s_touch_talk_down) {
-        atomic_fetch_or(&s_touch_talk_events, MUSE_BTN_TALK_RELEASE);
-        s_touch_talk_down = false;
-    } else {
-        atomic_fetch_or(&s_touch_talk_events, MUSE_BTN_TALK_PRESS);
-        s_touch_talk_down = true;
-    }
+    bool toggle = !s_touch_talk_down;
+    s_touch_talk_down = toggle;
+    atomic_fetch_or(&s_touch_talk_events, toggle ? MUSE_BTN_TALK_PRESS : MUSE_BTN_TALK_RELEASE);
 }
 
 static const char *TAG = "muse_input";

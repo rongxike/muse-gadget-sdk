@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -28,8 +29,8 @@
 #include "freertos/semphr.h"
 #include "lvgl.h"
 #include "mbedtls/base64.h"
-#include "src/draw/lv_image_decoder_private.h"   /* custom decoder */
-#include "src/misc/lv_area_private.h"            /* lv_area_intersect, for the ring */
+#include "src/draw/lv_image_decoder_private.h" /* custom decoder */
+#include "src/misc/lv_area_private.h"          /* lv_area_intersect, for the ring */
 
 #include "muse_ble.h"
 #include "muse_board.h"
@@ -55,14 +56,14 @@ static const char *TAG = "muse_ui";
 #define METER_SEG_PX 9
 #define METER_GAP_PX 4
 #define RING_RANGE 1000
-#define CAPTION_W 256           /* 16 columns of unscii_16, the width reply captions wrap to */
+#define CAPTION_W 256 /* 16 columns of unscii_16, the width reply captions wrap to */
 #define CAPTION_LINE_SPACE 2
-#define ART_BLANK_ROWS 3        /* Muse's art never reaches the grid's bottom rows */
-#define MINI_CELL_PX 2          /* Muse's grid cells over a reply that's read */
-#define ANSWER_MS 300           /* Muse making room for a reply, and back */
+#define ART_BLANK_ROWS 3 /* Muse's art never reaches the grid's bottom rows */
+#define MINI_CELL_PX 2   /* Muse's grid cells over a reply that's read */
+#define ANSWER_MS 300    /* Muse making room for a reply, and back */
 #define SPEAKER_PX 64
-#define SPEAKER_GROW_PX 8       /* how much the speaker button swells while held */
-#define SPEAKER_HOLD_MS 400     /* LVGL's long press */
+#define SPEAKER_GROW_PX 8   /* how much the speaker button swells while held */
+#define SPEAKER_HOLD_MS 400 /* LVGL's long press */
 
 #define COLOR_DIM 0x8b84a8
 #define COLOR_CAPTION 0xd8d2ff
@@ -87,9 +88,9 @@ static const char *TAG = "muse_ui";
  */
 static int s_w, s_h;
 static bool s_small;
-static bool s_tall;         /* compact, with room above and below Muse (StickS3) */
-static int s_canvas_px;     /* Muse's size on screen */
-static int s_dy;            /* full layout: offset from a 466 px tall screen */
+static bool s_tall;     /* compact, with room above and below Muse (StickS3) */
+static int s_canvas_px; /* Muse's size on screen */
+static int s_dy;        /* full layout: offset from a 466 px tall screen */
 static lv_indev_t *s_indev;
 static lv_obj_t *s_tv;
 /* True while the face tile is the visible tile. Updated in the LVGL task;
@@ -124,25 +125,28 @@ static lv_obj_t *s_ptt_hint, *s_spk_hint, *s_pwr_hint;
 static volatile bool s_bench_demo;
 void muse_ui_bench_demo(bool enabled)
 {
-    s_bench_demo = enabled;   /* display-only: never changes BLE identity/setup */
+    s_bench_demo = enabled; /* display-only: never changes BLE identity/setup */
 }
 #endif
 static lv_obj_t *s_ring;
-static lv_obj_t *s_bar;     /* compact layout's stand-in for the ring */
+static lv_obj_t *s_bar; /* compact layout's stand-in for the ring */
 static lv_obj_t *s_state_lbl;
-static lv_obj_t *s_name_lbl;    /* this gadget's own name, to tell it from the next one */
+static lv_obj_t *s_name_lbl; /* this gadget's own name, to tell it from the next one */
+#if CONFIG_MUSE_CLOCK
+static lv_obj_t *s_clock_lbl; /* HH:MM under the status, once SNTP sets the time */
+#endif
 static lv_obj_t *s_power_lbl;
 static lv_obj_t *s_caption_lbl;
-static lv_obj_t *s_reply_lbl;   /* full layout: the reply's page while answering */
+static lv_obj_t *s_reply_lbl; /* full layout: the reply's page while answering */
 static lv_obj_t *s_meter[METER_SEGS];
 static lv_obj_t *s_speaker;
 static lv_obj_t *s_speaker_icon;
 static lv_obj_t *s_aux_icon;
-static lv_obj_t *s_image;   /* display.draw_url, over the face */
+static lv_obj_t *s_image; /* display.draw_url, over the face */
 #if CONFIG_MUSE_WATCHER_CAMERA
 static lv_obj_t *s_camera_hint;
 #endif
-static lv_image_dsc_t s_image_dsc;  /* its data is set once the image is shown */
+static lv_image_dsc_t s_image_dsc; /* its data is set once the image is shown */
 /* The download writes the pixels without the display lock, so a big JPEG isn't
  * held up by each frame; this guards the buffer and what changed in it. */
 static SemaphoreHandle_t s_image_mutex;
@@ -154,7 +158,7 @@ static bool s_ready;
 static float s_level;
 static int s_shown_state = -1;
 static const char *s_shown_name;
-static const char *s_idle_name = "READY";   /* idle's label: set by the Wi-Fi state */
+static const char *s_idle_name = "READY"; /* idle's label: set by the Wi-Fi state */
 static int s_shown_lit = -1;
 static uint32_t s_shown_accent;
 static bool s_meter_visible = true;
@@ -163,7 +167,7 @@ static uint32_t s_caption_version;
 static float s_next_power_update;
 static float s_next_settings_tick;
 static bool s_dark;
-static int s_brightness = -1;       /* last applied */
+static int s_brightness = -1; /* last applied */
 static int s_preview_brightness = -1;
 static int s_shown_page = -1;
 static int s_shown_speaker = -1;
@@ -174,20 +178,25 @@ static muse_mode_t s_last_mode = MUSE_MODE_COUNT;
  * a little when the reply is heard, over a few lines to follow along, and
  * to the top when it's only read, over a page.
  */
-typedef struct {
-    int px, y;                /* Muse's size and centre */
-    int cols, lines;          /* the reply's page */
-    int w, h, top;            /* and where it goes */
+typedef struct
+{
+    int px, y;       /* Muse's size and centre */
+    int cols, lines; /* the reply's page */
+    int w, h, top;   /* and where it goes */
     lv_text_align_t align;
-    lv_obj_t *hides[4];       /* what it covers */
+    lv_obj_t *hides[4]; /* what it covers */
 } answer_layout_t;
 
-enum { ANSWER_HEARD, ANSWER_READ };
+enum
+{
+    ANSWER_HEARD,
+    ANSWER_READ
+};
 static answer_layout_t s_answers[2];
-static int s_answer = -1;       /* the layout showing, or -1 */
-static int s_page_for = -1;     /* the layout the reply's page is sized for */
-static int s_big_y;             /* Muse's centre at full size */
-static int s_muse_y;            /* and now */
+static int s_answer = -1;   /* the layout showing, or -1 */
+static int s_page_for = -1; /* the layout the reply's page is sized for */
+static int s_big_y;         /* Muse's centre at full size */
+static int s_muse_y;        /* and now */
 static int s_from_px, s_from_y, s_to_px, s_to_y;
 
 static const char *const MODE_NAMES[MUSE_MODE_COUNT] = {
@@ -212,21 +221,22 @@ static const char *const MODE_NAMES[MUSE_MODE_COUNT] = {
 #define STRIP_ROWS 16
 #define STRIPS LV_DRAW_SW_DRAW_UNIT_CNT
 
-#define MUSE_PIXEL_MAX_PX 512   /* muse_pixel_set_size's cap */
-#define DIRTY_RECTS_MAX 8       /* with the meter and labels, well inside LVGL's 32 areas */
-#define DIRTY_MERGE_PX 2048     /* pixels that cost about one walk of the widget tree */
+#define MUSE_PIXEL_MAX_PX 512 /* muse_pixel_set_size's cap */
+#define DIRTY_RECTS_MAX 8     /* with the meter and labels, well inside LVGL's 32 areas */
+#define DIRTY_MERGE_PX 2048   /* pixels that cost about one walk of the widget tree */
 
 static lv_image_dsc_t s_muse_src;
 static lv_draw_buf_t *s_strips[STRIPS];
 static bool s_strip_busy[STRIPS];
-static uint16_t *s_cells;       /* each cell's colour as last invalidated */
-static uint16_t *s_cell_row;    /* one screen row of Muse */
+static uint16_t *s_cells;    /* each cell's colour as last invalidated */
+static uint16_t *s_cell_row; /* one screen row of Muse */
 static bool s_cells_valid;
 
 static lv_result_t muse_dec_info(lv_image_decoder_t *dec, lv_image_decoder_dsc_t *dsc, lv_image_header_t *header)
 {
     (void)dec;
-    if (dsc->src != &s_muse_src) {
+    if (dsc->src != &s_muse_src)
+    {
         return LV_RESULT_INVALID;
     }
     *header = s_muse_src.header;
@@ -237,11 +247,13 @@ static lv_result_t muse_dec_info(lv_image_decoder_t *dec, lv_image_decoder_dsc_t
 static lv_result_t muse_dec_open(lv_image_decoder_t *dec, lv_image_decoder_dsc_t *dsc)
 {
     (void)dec;
-    for (int i = 0; i < STRIPS; i++) {
-        if (!s_strip_busy[i]) {
+    for (int i = 0; i < STRIPS; i++)
+    {
+        if (!s_strip_busy[i])
+        {
             s_strip_busy[i] = true;
             dsc->user_data = s_strips[i];
-            return LV_RESULT_OK;   /* the rest of the work is in get_area */
+            return LV_RESULT_OK; /* the rest of the work is in get_area */
         }
     }
     return LV_RESULT_INVALID;
@@ -252,13 +264,15 @@ static lv_result_t muse_dec_get_area(lv_image_decoder_t *dec, lv_image_decoder_d
 {
     (void)dec;
     int32_t y1 = area->y1 == LV_COORD_MIN ? full->y1 : area->y2 + 1;
-    if (y1 > full->y2) {
+    if (y1 > full->y2)
+    {
         return LV_RESULT_INVALID;
     }
     int32_t y2 = LV_MIN(y1 + STRIP_ROWS - 1, full->y2);
     int32_t w = lv_area_get_width(full);
     lv_draw_buf_t *buf = lv_draw_buf_reshape(dsc->user_data, LV_COLOR_FORMAT_RGB565, w, y2 - y1 + 1, LV_STRIDE_AUTO);
-    if (!buf) {
+    if (!buf)
+    {
         return LV_RESULT_INVALID;
     }
     muse_pixel_scale((uint16_t *)buf->data, buf->header.stride / sizeof(uint16_t), full->x1, full->x2, y1, y2);
@@ -273,9 +287,11 @@ static lv_result_t muse_dec_get_area(lv_image_decoder_t *dec, lv_image_decoder_d
 static void muse_dec_close(lv_image_decoder_t *dec, lv_image_decoder_dsc_t *dsc)
 {
     (void)dec;
-    for (int i = 0; i < STRIPS; i++) {
-        if (s_strips[i] == dsc->user_data) {
-            s_strip_busy[i] = false;   /* kept for the next open */
+    for (int i = 0; i < STRIPS; i++)
+    {
+        if (s_strips[i] == dsc->user_data)
+        {
+            s_strip_busy[i] = false; /* kept for the next open */
         }
     }
 }
@@ -287,10 +303,11 @@ static void muse_image_init(void)
     s_muse_src.header.w = s_canvas_px;
     s_muse_src.header.h = s_canvas_px;
     s_muse_src.header.stride = s_canvas_px * sizeof(uint16_t);
-    s_muse_src.data = (const uint8_t *)&s_muse_src;   /* LVGL skips sources without data */
+    s_muse_src.data = (const uint8_t *)&s_muse_src; /* LVGL skips sources without data */
     muse_pixel_set_size(s_canvas_px);
 
-    for (int i = 0; i < STRIPS; i++) {
+    for (int i = 0; i < STRIPS; i++)
+    {
         s_strips[i] = lv_draw_buf_create(s_canvas_px, STRIP_ROWS, LV_COLOR_FORMAT_RGB565, LV_STRIDE_AUTO);
         assert(s_strips[i]);
     }
@@ -304,10 +321,11 @@ static void muse_image_init(void)
 
     s_cells = heap_caps_malloc(MUSE_PX_W * MUSE_PX_H * sizeof(uint16_t), MUSE_BIG_CAPS);
     s_cell_row = heap_caps_malloc(MUSE_PIXEL_MAX_PX * sizeof(uint16_t), MUSE_BIG_CAPS);
-    if (!s_cells || !s_cell_row) {
+    if (!s_cells || !s_cell_row)
+    {
         free(s_cells);
         free(s_cell_row);
-        s_cells = s_cell_row = NULL;   /* redraw all of Muse every frame */
+        s_cells = s_cell_row = NULL; /* redraw all of Muse every frame */
     }
 }
 
@@ -321,7 +339,7 @@ static void muse_image_init(void)
  */
 static int32_t cell_px(int cell, int size)
 {
-    return (cell * size + MUSE_PX_W - 1) / MUSE_PX_W;   /* a cell's first screen pixel */
+    return (cell * size + MUSE_PX_W - 1) / MUSE_PX_W; /* a cell's first screen pixel */
 }
 
 static int32_t rect_cells(const lv_area_t *r)
@@ -331,45 +349,54 @@ static int32_t rect_cells(const lv_area_t *r)
 
 static void invalidate_muse(void)
 {
-    if (!s_cells) {
+    if (!s_cells)
+    {
         lv_obj_invalidate(s_canvas);
         return;
     }
     int size = (int)s_muse_src.header.w;
-    lv_area_t r[MUSE_PX_H];   /* in cells */
+    lv_area_t r[MUSE_PX_H]; /* in cells */
     int n = 0;
-    for (int cy = 0; cy < MUSE_PX_H; cy++) {
+    for (int cy = 0; cy < MUSE_PX_H; cy++)
+    {
         int32_t y = cell_px(cy, size);
         muse_pixel_scale(s_cell_row, size, 0, size - 1, y, y);
         uint16_t *last = &s_cells[cy * MUSE_PX_W];
         int x1 = -1, x2 = -1;
-        for (int cx = 0; cx < MUSE_PX_W; cx++) {
+        for (int cx = 0; cx < MUSE_PX_W; cx++)
+        {
             uint16_t c = s_cell_row[cell_px(cx, size)];
-            if (c != last[cx] || !s_cells_valid) {
+            if (c != last[cx] || !s_cells_valid)
+            {
                 last[cx] = c;
                 x1 = x1 < 0 ? cx : x1;
                 x2 = cx;
             }
         }
-        if (x2 >= 0) {
+        if (x2 >= 0)
+        {
             r[n++] = (lv_area_t){x1, cy, x2, cy};
         }
     }
     s_cells_valid = true;
 
     int64_t merge_cells = (int64_t)DIRTY_MERGE_PX * MUSE_PX_W * MUSE_PX_H / (size * size);
-    while (n > 1) {
+    while (n > 1)
+    {
         int best = 0;
         int32_t best_cost = INT32_MAX;
-        for (int i = 0; i + 1 < n; i++) {
+        for (int i = 0; i + 1 < n; i++)
+        {
             lv_area_t j = {LV_MIN(r[i].x1, r[i + 1].x1), r[i].y1, LV_MAX(r[i].x2, r[i + 1].x2), r[i + 1].y2};
             int32_t cost = rect_cells(&j) - rect_cells(&r[i]) - rect_cells(&r[i + 1]);
-            if (cost < best_cost) {
+            if (cost < best_cost)
+            {
                 best = i;
                 best_cost = cost;
             }
         }
-        if (n <= DIRTY_RECTS_MAX && best_cost > merge_cells) {
+        if (n <= DIRTY_RECTS_MAX && best_cost > merge_cells)
+        {
             break;
         }
         r[best].x1 = LV_MIN(r[best].x1, r[best + 1].x1);
@@ -381,7 +408,8 @@ static void invalidate_muse(void)
 
     lv_area_t at;
     lv_obj_get_coords(s_canvas, &at);
-    for (int i = 0; i < n; i++) {
+    for (int i = 0; i < n; i++)
+    {
         lv_area_t a = {
             at.x1 + cell_px(r[i].x1, size),
             at.y1 + cell_px(r[i].y1, size),
@@ -436,8 +464,10 @@ static lv_obj_t *make_mic(lv_obj_t *parent, int size)
 
 static void color_mic(lv_obj_t *icon, uint32_t color)
 {
-    if (!icon) return;
-    for (uint32_t i = 0; i < lv_obj_get_child_count(icon); i++) {
+    if (!icon)
+        return;
+    for (uint32_t i = 0; i < lv_obj_get_child_count(icon); i++)
+    {
         lv_obj_t *part = lv_obj_get_child(icon, i);
         lv_obj_set_style_bg_color(part, lv_color_hex(color), 0);
         lv_obj_set_style_arc_color(part, lv_color_hex(color), LV_PART_MAIN);
@@ -446,12 +476,13 @@ static void color_mic(lv_obj_t *icon, uint32_t color)
 
 static void set_mic_color(uint32_t color)
 {
-    color_mic(s_mic_icon, color);   /* legacy face icon only */
+    color_mic(s_mic_icon, color); /* legacy face icon only */
 }
 
 static void on_touch_mic(lv_event_t *e)
 {
-    switch (lv_event_get_code(e)) {
+    switch (lv_event_get_code(e))
+    {
     case LV_EVENT_PRESSED:
         muse_input_touch_talk(true);
         break;
@@ -467,15 +498,19 @@ static void on_touch_mic(lv_event_t *e)
 /* Icons beside the physical buttons, in place of an instruction caption. */
 static void build_button_icons(lv_obj_t *face)
 {
-    if (muse_board->rim_controls) return;   /* dedicated rim hints below */
+    if (muse_board->rim_controls)
+        return; /* dedicated rim hints below */
     const muse_button_hint_t *t = &muse_board->talk_hint, *a = &muse_board->aux_hint;
-    s_mic_icon = make_mic(face, s_tall ? 24 : s_small ? 12 : 26);
+    s_mic_icon = make_mic(face, s_tall ? 24 : s_small ? 12
+                                                      : 26);
     lv_obj_align(s_mic_icon, t->align, t->x, t->y);
     set_mic_color(COLOR_DIM);
-    if (muse_board->touch_talk) {
+    if (muse_board->touch_talk)
+    {
         lv_obj_add_flag(s_mic_icon, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_set_ext_click_area(s_mic_icon, 12);
-        for (uint32_t i = 0; i < lv_obj_get_child_count(s_mic_icon); i++) {
+        for (uint32_t i = 0; i < lv_obj_get_child_count(s_mic_icon); i++)
+        {
             lv_obj_remove_flag(lv_obj_get_child(s_mic_icon, i), LV_OBJ_FLAG_CLICKABLE);
         }
         lv_obj_add_event_cb(s_mic_icon, on_touch_mic, LV_EVENT_ALL, NULL);
@@ -483,7 +518,8 @@ static void build_button_icons(lv_obj_t *face)
 
     /* Without touch the aux button opens the menu rather than sleeping. A board
      * that leaves aux_hint out has no button to put an icon beside. */
-    if (a->align == LV_ALIGN_DEFAULT) {
+    if (a->align == LV_ALIGN_DEFAULT)
+    {
         return;
     }
     s_aux_icon = make_label(face, s_small ? &lv_font_montserrat_14 : &lv_font_montserrat_28, COLOR_DIM);
@@ -512,7 +548,8 @@ static const lv_font_t *caption_font(void)
 {
 #if CONFIG_MUSE_CJK_FONT
     static lv_font_t font;
-    if (!font.get_glyph_dsc) {
+    if (!font.get_glyph_dsc)
+    {
         font = lv_font_unscii_16;
         font.fallback = &muse_font_cjk_16;
     }
@@ -562,20 +599,23 @@ static void speaker_grow(bool grow)
 static void on_speaker_event(lv_event_t *e)
 {
     bool on = muse_settings_speaker_on();
-    bool idle = muse_state_mode(NULL) == MUSE_MODE_IDLE;   /* don't cover a reply's captions */
-    switch (lv_event_get_code(e)) {
+    bool idle = muse_state_mode(NULL) == MUSE_MODE_IDLE; /* don't cover a reply's captions */
+    switch (lv_event_get_code(e))
+    {
     case LV_EVENT_PRESSED:
         speaker_grow(true);
         break;
     case LV_EVENT_LONG_PRESSED:
         muse_settings_set_speaker_on(!on);
         show_speaker(!on);
-        if (idle) {
+        if (idle)
+        {
             muse_state_set_caption(on ? "SPEAKER OFF" : "SPEAKER ON");
         }
         break;
     case LV_EVENT_SHORT_CLICKED:
-        if (idle) {
+        if (idle)
+        {
             muse_state_set_caption(on ? "HOLD TO MUTE" : "HOLD TO UNMUTE");
         }
         break;
@@ -597,10 +637,11 @@ static void build_speaker(lv_obj_t *face, int x, int y)
     lv_obj_set_style_radius(s_speaker, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_opa(s_speaker, LV_OPA_COVER, 0);
     lv_obj_remove_flag(s_speaker, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_ext_click_area(s_speaker, 12);   /* a fingertip is bigger than the circle */
-    static const lv_event_code_t EVENTS[] = { LV_EVENT_PRESSED, LV_EVENT_LONG_PRESSED, LV_EVENT_SHORT_CLICKED,
-                                              LV_EVENT_RELEASED, LV_EVENT_PRESS_LOST };
-    for (size_t i = 0; i < sizeof(EVENTS) / sizeof(EVENTS[0]); i++) {
+    lv_obj_set_ext_click_area(s_speaker, 12); /* a fingertip is bigger than the circle */
+    static const lv_event_code_t EVENTS[] = {LV_EVENT_PRESSED, LV_EVENT_LONG_PRESSED, LV_EVENT_SHORT_CLICKED,
+                                             LV_EVENT_RELEASED, LV_EVENT_PRESS_LOST};
+    for (size_t i = 0; i < sizeof(EVENTS) / sizeof(EVENTS[0]); i++)
+    {
         lv_obj_add_event_cb(s_speaker, on_speaker_event, EVENTS[i], NULL);
     }
     s_speaker_icon = make_label(s_speaker, &lv_font_montserrat_28, COLOR_DIM);
@@ -611,14 +652,15 @@ static void build_speaker(lv_obj_t *face, int x, int y)
 
 static void set_canvas_px(int px)
 {
-    if ((int)s_muse_src.header.w == px) {
+    if ((int)s_muse_src.header.w == px)
+    {
         return;
     }
     s_muse_src.header.w = px;
     s_muse_src.header.h = px;
     s_muse_src.header.stride = px * sizeof(uint16_t);
     muse_pixel_set_size(px);
-    lv_image_set_src(s_canvas, &s_muse_src);   /* picks up the new size */
+    lv_image_set_src(s_canvas, &s_muse_src); /* picks up the new size */
 }
 
 static void move_muse_t(void *obj, int32_t t)
@@ -653,20 +695,26 @@ static void set_answer(int which)
     const answer_layout_t *l = which >= 0 ? &s_answers[which] : NULL;
     s_answer = which;
     const size_t n = sizeof(s_answers[0].hides) / sizeof(s_answers[0].hides[0]);
-    for (size_t i = 0; was && i < n; i++) {
-        if (was->hides[i]) {
+    for (size_t i = 0; was && i < n; i++)
+    {
+        if (was->hides[i])
+        {
             lv_obj_remove_flag(was->hides[i], LV_OBJ_FLAG_HIDDEN);
         }
     }
-    for (size_t i = 0; l && i < n; i++) {
-        if (l->hides[i]) {
+    for (size_t i = 0; l && i < n; i++)
+    {
+        if (l->hides[i])
+        {
             lv_obj_add_flag(l->hides[i], LV_OBJ_FLAG_HIDDEN);
         }
     }
-    if (!muse_board->round && s_ring) {
-        lv_obj_set_flag(s_ring, LV_OBJ_FLAG_HIDDEN, l != NULL);   /* the reply runs past a rectangle's ring */
+    if (!muse_board->round && s_ring)
+    {
+        lv_obj_set_flag(s_ring, LV_OBJ_FLAG_HIDDEN, l != NULL); /* the reply runs past a rectangle's ring */
     }
-    if (l) {
+    if (l)
+    {
         lv_obj_set_size(s_reply_lbl, l->w, l->h);
         lv_obj_align(s_reply_lbl, LV_ALIGN_CENTER, 0, l->top + l->h / 2);
         lv_obj_set_style_text_align(s_reply_lbl, l->align, 0);
@@ -677,7 +725,8 @@ static void set_answer(int which)
 /* Whether a reply `w` px wide fits across the screen `y` px from the centre. */
 static bool fits_across(int w, int y, int ring_in)
 {
-    if (!muse_board->round) {
+    if (!muse_board->round)
+    {
         return w <= s_w - 16;
     }
     int r = ring_in - 6;
@@ -688,7 +737,8 @@ static bool fits_across(int w, int y, int ring_in)
 static int reply_bottom(int w, int ring_in)
 {
     int bottom = s_h / 2 - 28;
-    if (muse_board->round) {
+    if (muse_board->round)
+    {
         int r = ring_in - 6;
         int chord = w / 2 < r ? (int)sqrtf((float)(r * r - w * w / 4)) : 0;
         bottom = chord < bottom ? chord : bottom;
@@ -709,17 +759,22 @@ static void set_reply_box(answer_layout_t *l, int cols, int lines, int top, int 
 static void add_hides(answer_layout_t *l, int n)
 {
     lv_area_t box = {
-        .x1 = s_w / 2 - l->w / 2, .y1 = s_h / 2 + l->top,
-        .x2 = s_w / 2 + l->w / 2 - 1, .y2 = s_h / 2 + l->top + l->h - 1,
+        .x1 = s_w / 2 - l->w / 2,
+        .y1 = s_h / 2 + l->top,
+        .x2 = s_w / 2 + l->w / 2 - 1,
+        .y2 = s_h / 2 + l->top + l->h - 1,
     };
-    lv_obj_t *const hints[] = { s_mic_icon, s_aux_icon };
-    for (size_t i = 0; i < 2; i++) {
-        if (!hints[i]) {
-            continue;   /* no aux icon on this board */
+    lv_obj_t *const hints[] = {s_mic_icon, s_aux_icon};
+    for (size_t i = 0; i < 2; i++)
+    {
+        if (!hints[i])
+        {
+            continue; /* no aux icon on this board */
         }
         lv_area_t a;
         lv_obj_get_coords(hints[i], &a);
-        if (a.x1 <= box.x2 && a.x2 >= box.x1 && a.y1 <= box.y2 && a.y2 >= box.y1) {
+        if (a.x1 <= box.x2 && a.x2 >= box.x1 && a.y1 <= box.y2 && a.y2 >= box.y1)
+        {
             l->hides[n++] = hints[i];
         }
     }
@@ -735,9 +790,10 @@ static void build_answer(lv_obj_t *face, int ring_in)
 {
     int spk_r = (SPEAKER_PX + SPEAKER_GROW_PX) / 2;
     int spk_x = -s_w / 2 + 8 + spk_r, spk_y = -s_h / 2 + 8 + spk_r;
-    if (muse_board->round) {
+    if (muse_board->round)
+    {
         spk_y = -ring_in * 5 / 8;
-        int d = ring_in - spk_r - 4;   /* just inside the ring, even when swollen */
+        int d = ring_in - spk_r - 4; /* just inside the ring, even when swollen */
         spk_x = -(int)sqrtf((float)(d * d - spk_y * spk_y));
     }
     const lv_font_t *font = caption_font();
@@ -753,21 +809,24 @@ static void build_answer(lv_obj_t *face, int ring_in)
     int h = 3 * pitch - CAPTION_LINE_SPACE;
     int art_bottom = l->y + l->px / 2 - ART_BLANK_ROWS * cell;
     set_reply_box(l, CAPTION_W / cw, 3, reply_bottom(CAPTION_W, ring_in) - h, cw, pitch);
-    for (int c = 24; c > l->cols; c--) {   /* wider if it still clears Muse */
+    for (int c = 24; c > l->cols; c--)
+    { /* wider if it still clears Muse */
         int top = reply_bottom(c * cw, ring_in) - h;
-        if (top >= art_bottom + 6 && fits_across(c * cw, top, ring_in)) {
+        if (top >= art_bottom + 6 && fits_across(c * cw, top, ring_in))
+        {
             set_reply_box(l, c, 3, top, cw, pitch);
             break;
         }
     }
-    if (l->top < art_bottom + 6) {
-        l->y -= art_bottom + 6 - l->top;   /* no room under Muse: it moves up */
+    if (l->top < art_bottom + 6)
+    {
+        l->y -= art_bottom + 6 - l->top; /* no room under Muse: it moves up */
     }
 
     l = &s_answers[ANSWER_READ];
     int status_bottom = (muse_board->rim_controls ? 40 : 20 + s_dy) + 16 - s_h / 2;
     l->px = MUSE_PX_W * MINI_CELL_PX;
-    l->y = status_bottom + 2 + l->px / 2;   /* its sparkles clear of the status line */
+    l->y = status_bottom + 2 + l->px / 2; /* its sparkles clear of the status line */
     l->align = LV_TEXT_ALIGN_LEFT;
     art_bottom = l->y + l->px / 2 - ART_BLANK_ROWS * MINI_CELL_PX;
     int top = (art_bottom > spk_y + spk_r ? art_bottom : spk_y + spk_r) + 8;
@@ -775,13 +834,16 @@ static void build_answer(lv_obj_t *face, int ring_in)
     /* The widest page isn't the biggest: a round screen narrows towards the bottom. */
     /* Keep read replies in a central column clear of dedicated rim hints. */
     int max_cols = muse_board->rim_controls ? 13 : 24;
-    for (int c = 12; c <= max_cols && fits_across(c * cw, top, ring_in); c++) {
+    for (int c = 12; c <= max_cols && fits_across(c * cw, top, ring_in); c++)
+    {
         int n = (reply_bottom(c * cw, ring_in) - top + CAPTION_LINE_SPACE) / pitch;
         /* A third of the caption spare for characters wider than a byte. */
-        while ((c + 1) * n > MUSE_CAPTION_MAX * 2 / 3) {
+        while ((c + 1) * n > MUSE_CAPTION_MAX * 2 / 3)
+        {
             n--;
         }
-        if (c * n > l->cols * l->lines) {
+        if (c * n > l->cols * l->lines)
+        {
             set_reply_box(l, c, n, top, cw, pitch);
         }
     }
@@ -795,14 +857,15 @@ static void build_answer(lv_obj_t *face, int ring_in)
     lv_obj_remove_flag(s_reply_lbl, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(s_reply_lbl, LV_OBJ_FLAG_HIDDEN);
 
-    if (muse_board->touch && !muse_board->rim_controls) {
+    if (muse_board->touch && !muse_board->rim_controls)
+    {
         build_speaker(face, spk_x, spk_y);
     }
 
     /* Out of the way while a page is up: the mode name, where Muse was. */
     lv_obj_update_layout(face);
     s_answers[ANSWER_READ].hides[0] = s_state_lbl;
-    s_answers[ANSWER_READ].hides[1] = s_name_lbl;   /* the reply takes the top too */
+    s_answers[ANSWER_READ].hides[1] = s_name_lbl; /* the reply takes the top too */
     add_hides(&s_answers[ANSWER_READ], 2);
     add_hides(&s_answers[ANSWER_HEARD], 0);
 }
@@ -823,22 +886,25 @@ static void on_ring_draw(lv_event_t *e)
     lv_obj_get_coords(s_ring, &c);
     int32_t cx = (c.x1 + c.x2) / 2;
     int32_t cy = (c.y1 + c.y2) / 2;
-    int32_t out = lv_area_get_width(&c) / 2 + 1;                                     /* with antialiasing */
-    int32_t hole = out - 1 - lv_obj_get_style_arc_width(s_ring, LV_PART_MAIN) - 2;   /* without */
+    int32_t out = lv_area_get_width(&c) / 2 + 1;                                   /* with antialiasing */
+    int32_t hole = out - 1 - lv_obj_get_style_arc_width(s_ring, LV_PART_MAIN) - 2; /* without */
     lv_event_stop_processing(e);
-    for (int32_t y = LV_MAX(clip.y1, cy - out); y <= LV_MIN(clip.y2, cy + out); y += RING_SLAB_ROWS) {
+    for (int32_t y = LV_MAX(clip.y1, cy - out); y <= LV_MIN(clip.y2, cy + out); y += RING_SLAB_ROWS)
+    {
         int32_t y2 = LV_MIN(y + RING_SLAB_ROWS - 1, clip.y2);
         int32_t near = y <= cy && cy <= y2 ? 0 : LV_MIN(LV_ABS(y - cy), LV_ABS(y2 - cy));
         int32_t far = LV_MAX(LV_ABS(y - cy), LV_ABS(y2 - cy));
         int32_t ow = near < out ? (int32_t)ceilf(sqrtf((float)(out * out - near * near))) : 0;
         int32_t iw = far < hole ? (int32_t)sqrtf((float)(hole * hole - far * far)) : 0;
         lv_area_t pieces[2] = {
-            { cx - ow, y, iw ? cx - iw : cx + ow, y2 },
-            { cx + iw, y, cx + ow, y2 },
+            {cx - ow, y, iw ? cx - iw : cx + ow, y2},
+            {cx + iw, y, cx + ow, y2},
         };
-        for (int i = 0; i < (iw ? 2 : 1); i++) {
-            if (lv_area_intersect(&layer->_clip_area, &clip, &pieces[i])) {
-                lv_obj_event_base(NULL, e);   /* the arc's own drawing */
+        for (int i = 0; i < (iw ? 2 : 1); i++)
+        {
+            if (lv_area_intersect(&layer->_clip_area, &clip, &pieces[i]))
+            {
+                lv_obj_event_base(NULL, e); /* the arc's own drawing */
             }
         }
     }
@@ -853,7 +919,8 @@ static void build_screen(void)
     lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *face = scr;
-    if (muse_board->touch) {
+    if (muse_board->touch)
+    {
         /* Swipe left from Muse for settings. */
         s_tv = lv_tileview_create(scr);
         lv_obj_set_style_bg_color(s_tv, lv_color_black(), 0);
@@ -872,7 +939,8 @@ static void build_screen(void)
         face = s_face;
     }
 
-    if (!s_small && muse_board->no_ring) {
+    if (!s_small && muse_board->no_ring)
+    {
         /* A square panel: progress along the bottom edge, as the compact
          * layout has it, rather than a circle around Muse. */
         s_bar = lv_obj_create(face);
@@ -880,7 +948,9 @@ static void build_screen(void)
         lv_obj_set_size(s_bar, 0, 6);
         lv_obj_set_style_bg_opa(s_bar, LV_OPA_COVER, 0);
         lv_obj_align(s_bar, LV_ALIGN_BOTTOM_LEFT, 0, 0);
-    } else if (!s_small) {
+    }
+    else if (!s_small)
+    {
         /* Progress ring around the bezel. */
         int d = (s_w < s_h ? s_w : s_h) - 8;
         s_ring = lv_arc_create(face);
@@ -904,10 +974,11 @@ static void build_screen(void)
      * lines as low as the ring leaves them room, the level meter, then Muse,
      * whose blank bottom rows can tuck in behind the meter.
      */
-    int ring_in = (s_w < s_h ? s_w : s_h) / 2 - 10;   /* the ring's inner edge */
+    int ring_in = (s_w < s_h ? s_w : s_h) / 2 - 10; /* the ring's inner edge */
     int cap_h = 2 * lv_font_get_line_height(&lv_font_unscii_16) + CAPTION_LINE_SPACE;
-    int cap_bottom = 179;                              /* a 466 px circle's; fine for rectangles */
-    if (muse_board->round) {
+    int cap_bottom = 179; /* a 466 px circle's; fine for rectangles */
+    if (muse_board->round)
+    {
         cap_bottom = (int)sqrtf((float)(ring_in * ring_in - CAPTION_W * CAPTION_W / 4)) - 3;
     }
     int cap_top = cap_bottom - cap_h;
@@ -923,7 +994,8 @@ static void build_screen(void)
     s_muse_y = s_big_y;
     lv_obj_add_flag(s_canvas, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(s_canvas, on_canvas_clicked, LV_EVENT_CLICKED, NULL);
-    if (s_ring) {
+    if (s_ring)
+    {
         /* The canvas's black corners reach the bezel; keep the ring on top. */
         lv_obj_move_foreground(s_ring);
     }
@@ -937,7 +1009,8 @@ static void build_screen(void)
     lv_obj_set_flex_flow(status, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(status, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(status, s_small ? 4 : 8, 0);
-    lv_obj_align(status, LV_ALIGN_TOP_MID, 0, muse_board->rim_controls ? 40 : s_small ? 1 : 20 + s_dy);
+    lv_obj_align(status, LV_ALIGN_TOP_MID, 0, muse_board->rim_controls ? 40 : s_small ? 1
+                                                                                      : 20 + s_dy);
     s_wifi_icon = make_label(status, &lv_font_montserrat_14, COLOR_DIM);
     s_ble_icon = make_label(status, &lv_font_montserrat_14, COLOR_DIM);
     s_power_lbl = make_label(status, &lv_font_unscii_8, COLOR_DIM);
@@ -946,7 +1019,8 @@ static void build_screen(void)
      * unless the screen is tall enough to fit it in small type above Muse. */
     s_state_lbl = make_label(face, s_small ? &lv_font_unscii_8 : &lv_font_unscii_16, 0xffffff);
     lv_obj_set_style_text_letter_space(s_state_lbl, s_small ? 1 : 2, 0);
-    lv_obj_align(s_state_lbl, LV_ALIGN_TOP_MID, 0, muse_board->rim_controls ? 64 : s_small ? 22 : 40 + s_dy);
+    lv_obj_align(s_state_lbl, LV_ALIGN_TOP_MID, 0, muse_board->rim_controls ? 64 : s_small ? 22
+                                                                                           : 40 + s_dy);
     lv_obj_set_flag(s_state_lbl, LV_OBJ_FLAG_HIDDEN, s_small && !s_tall && s_h < 200);
 
     /* This gadget's own name, dim under the state while it's unpaired: with
@@ -954,8 +1028,10 @@ static void build_screen(void)
      * Muse app. update_chrome() fills it in, shortens it to the hex tail on a
      * screen too narrow for the whole thing, and empties it once paired. */
     s_name_lbl = make_label(face, s_small ? &lv_font_unscii_8 : &lv_font_unscii_16, COLOR_DIM);
-    lv_obj_align(s_name_lbl, LV_ALIGN_TOP_MID, 0, muse_board->rim_controls ? 88 : s_small ? 32 : 60 + s_dy);
-    if (muse_board->rim_controls) {
+    lv_obj_align(s_name_lbl, LV_ALIGN_TOP_MID, 0, muse_board->rim_controls ? 88 : s_small ? 32
+                                                                                          : 60 + s_dy);
+    if (muse_board->rim_controls)
+    {
         /* Safe chord below the round panel's top, not the full 466 px width. */
         lv_obj_set_size(s_state_lbl, 280, lv_font_get_line_height(&lv_font_unscii_16));
         lv_obj_set_size(s_name_lbl, 280, lv_font_get_line_height(&lv_font_unscii_16));
@@ -966,8 +1042,23 @@ static void build_screen(void)
      * these rows, so there's nowhere to put this without covering the face. */
     lv_obj_set_flag(s_name_lbl, LV_OBJ_FLAG_HIDDEN, s_small && !s_tall && s_h < 200);
 
+#if CONFIG_MUSE_CLOCK
+    /* The time, dim under the name on the idle screen. POSIX TZ is set once
+     * here; SNTP (wifi_mgr) provides the wall clock, and update_clock() fills
+     * this in and hides it off the idle screen. */
+    setenv("TZ", CONFIG_MUSE_CLOCK_TZ, 1);
+    tzset();
+    s_clock_lbl = make_label(face, s_small ? &lv_font_unscii_8 : &lv_font_unscii_16, 0x9aa0a6);
+    lv_obj_set_style_text_letter_space(s_clock_lbl, s_small ? 1 : 2, 0);
+    lv_obj_align(s_clock_lbl, LV_ALIGN_TOP_MID, 0, muse_board->rim_controls ? 112 : s_small ? 42
+                                                                                            : 80 + s_dy);
+    lv_label_set_text(s_clock_lbl, "--:--");
+    lv_obj_set_flag(s_clock_lbl, LV_OBJ_FLAG_HIDDEN, s_small && !s_tall && s_h < 200);
+#endif
+
     s_caption_lbl = make_label(face, font_pick(caption_font(), &lv_font_unscii_8), COLOR_CAPTION);
-    if (s_small) {
+    if (s_small)
+    {
         /* Two lines over the bottom of the face, on a dark band so they stay
          * legible. A tall screen has room to keep them above the mic icon. */
         lv_obj_set_size(s_caption_lbl, s_w, 2 * 8 + 2 + 4);
@@ -999,7 +1090,8 @@ static void build_screen(void)
 
     /* Chunky level meter. */
     int span = METER_SEGS * (METER_SEG_PX + METER_GAP_PX) - METER_GAP_PX;
-    for (int i = 0; i < METER_SEGS; i++) {
+    for (int i = 0; i < METER_SEGS; i++)
+    {
         lv_obj_t *seg = lv_obj_create(face);
         lv_obj_remove_style_all(seg);
         lv_obj_remove_flag(seg, LV_OBJ_FLAG_SCROLLABLE);
@@ -1014,15 +1106,17 @@ static void build_screen(void)
     build_answer(face, ring_in);
 }
 
-
 static void on_cover_event(lv_event_t *e)
 {
-    if (lv_event_get_code(e) == LV_EVENT_PRESSED) {
+    if (lv_event_get_code(e) == LV_EVENT_PRESSED)
+    {
         /* Wake on touch; keep the (now clear) cover until release so the tap
          * doesn't land on whatever is underneath. */
         muse_state_set_asleep(false);
         lv_obj_set_style_bg_opa(s_cover, LV_OPA_TRANSP, 0);
-    } else if (!muse_state_asleep()) {
+    }
+    else if (!muse_state_asleep())
+    {
         lv_obj_add_flag(s_cover, LV_OBJ_FLAG_HIDDEN);
     }
 }
@@ -1031,7 +1125,8 @@ static void on_cover_event(lv_event_t *e)
 static void image_hide_locked(void)
 {
     xSemaphoreTake(s_image_mutex, portMAX_DELAY);
-    if (s_image_buf) {
+    if (s_image_buf)
+    {
         lv_obj_add_flag(s_image, LV_OBJ_FLAG_HIDDEN);
         lv_image_set_src(s_image, NULL);
         heap_caps_free(s_image_buf);
@@ -1046,7 +1141,8 @@ static void image_hide_locked(void)
 static void image_sync(void)
 {
     xSemaphoreTake(s_image_mutex, portMAX_DELAY);
-    if (s_image_buf && !s_image_dsc.data) {
+    if (s_image_buf && !s_image_dsc.data)
+    {
         s_image_dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
         s_image_dsc.header.cf = LV_COLOR_FORMAT_RGB565;
         s_image_dsc.header.w = s_w;
@@ -1059,7 +1155,8 @@ static void image_sync(void)
         lv_obj_remove_flag(s_image, LV_OBJ_FLAG_HIDDEN);
         muse_state_set_asleep(false);
     }
-    if (s_image_dirty) {
+    if (s_image_dirty)
+    {
         lv_obj_invalidate_area(s_image, &s_image_area);
         s_image_dirty = false;
     }
@@ -1070,7 +1167,8 @@ static void on_image_clicked(lv_event_t *e)
 {
     (void)e;
 #if CONFIG_MUSE_WATCHER_CAMERA
-    if (watcher_camera_preview_active()) {
+    if (watcher_camera_preview_active())
+    {
         watcher_camera_preview_toggle();
         return;
     }
@@ -1082,14 +1180,16 @@ static void on_image_clicked(lv_event_t *e)
 static void on_camera_hint_clicked(lv_event_t *e)
 {
     (void)e;
-    if (watcher_camera_preview_active()) watcher_camera_preview_toggle();
+    if (watcher_camera_preview_active())
+        watcher_camera_preview_toggle();
 }
 #endif
 
 static void on_any_press(lv_event_t *e)
 {
     (void)e;
-    if (muse_board->touch_talk && muse_link_state() == MUSE_LINK_CONFIRM) {
+    if (muse_board->touch_talk && muse_link_state() == MUSE_LINK_CONFIRM)
+    {
         muse_input_touch_talk(true);
         muse_input_touch_talk(false);
     }
@@ -1114,20 +1214,23 @@ static lv_obj_t *make_control_icon(lv_obj_t *scr, const muse_button_hint_t *pos,
 /* Icons only beside the physical controls, including before pairing. */
 static void update_control_hints(muse_mode_t mode)
 {
-    if (!s_ptt_hint) return;
+    if (!s_ptt_hint)
+        return;
     /* Don't obscure settings rows/keyboards with floating physical icons. */
     bool settings = s_tv && lv_tileview_get_tile_active(s_tv) == s_settings;
     lv_obj_set_flag(s_ptt_hint, LV_OBJ_FLAG_HIDDEN, settings);
     lv_obj_set_flag(s_spk_hint, LV_OBJ_FLAG_HIDDEN, settings);
     lv_obj_set_flag(s_pwr_hint, LV_OBJ_FLAG_HIDDEN, settings);
     static int last_mode = -1;
-    if ((int)mode != last_mode) {
+    if ((int)mode != last_mode)
+    {
         color_mic(s_ptt_hint, mode == MUSE_MODE_LISTENING ? 0x64d4ff : 0x80bfff);
         last_mode = (int)mode;
     }
     bool speaker_on = muse_settings_speaker_on();
     const char *speaker = speaker_on ? LV_SYMBOL_VOLUME_MID : LV_SYMBOL_MUTE;
-    if (strcmp(speaker, lv_label_get_text(s_spk_hint))) {
+    if (strcmp(speaker, lv_label_get_text(s_spk_hint)))
+    {
         lv_label_set_text(s_spk_hint, speaker);
         lv_obj_set_style_text_color(s_spk_hint, lv_color_hex(speaker_on ? 0xffd060 : 0x8b7845), 0);
     }
@@ -1138,7 +1241,8 @@ static void build_overlays(void)
     lv_obj_t *scr = lv_screen_active();
 
     /* Page dots. */
-    for (int i = 0; i < 2 && s_tv; i++) {
+    for (int i = 0; i < 2 && s_tv; i++)
+    {
         lv_obj_t *d = lv_obj_create(scr);
         lv_obj_remove_style_all(d);
         lv_obj_set_size(d, 8, 8);
@@ -1172,7 +1276,8 @@ static void build_overlays(void)
     lv_obj_add_event_cb(s_camera_hint, on_camera_hint_clicked, LV_EVENT_CLICKED, NULL);
 #endif
 
-    if (muse_board->rim_controls) {
+    if (muse_board->rim_controls)
+    {
         /* Dedicated ownership: legacy chrome/reply hides must never claim it. */
         s_ptt_hint = make_mic(scr, 26);
         lv_obj_align(s_ptt_hint, muse_board->talk_hint.align, muse_board->talk_hint.x, muse_board->talk_hint.y);
@@ -1219,14 +1324,16 @@ static void build_overlays(void)
     lv_obj_add_event_cb(s_cover, on_cover_event, LV_EVENT_RELEASED, NULL);
     lv_obj_add_event_cb(s_cover, on_cover_event, LV_EVENT_PRESS_LOST, NULL);
 
-    if (s_indev) {
+    if (s_indev)
+    {
         lv_indev_add_event_cb(s_indev, on_any_press, LV_EVENT_PRESSED, NULL);
     }
 }
 
 static void apply_brightness(int pct)
 {
-    if (pct != s_brightness) {
+    if (pct != s_brightness)
+    {
         muse_board->set_brightness(pct);
         s_brightness = pct;
     }
@@ -1241,31 +1348,42 @@ bool muse_ui_dark(void)
 static bool update_sleep(void)
 {
     bool asleep = muse_state_asleep();
-    if (asleep && !s_dark) {
+    if (asleep && !s_dark)
+    {
         muse_menu_close();
         apply_brightness(0);
-        if (muse_board->panel_sleep) {
+        if (muse_board->panel_sleep)
+        {
             muse_board->panel_sleep(true);
         }
         lv_obj_set_style_bg_opa(s_cover, LV_OPA_COVER, 0);
         lv_obj_remove_flag(s_cover, LV_OBJ_FLAG_HIDDEN);
         s_dark = true;
-    } else if (!asleep && s_dark) {
+    }
+    else if (!asleep && s_dark)
+    {
         s_dark = false;
-        if (muse_board->panel_sleep) {
+        if (muse_board->panel_sleep)
+        {
             muse_board->panel_sleep(false);
         }
         /* Woken by a button: drop the cover now. Woken by touch: on release. */
-        if (lv_obj_get_style_bg_opa(s_cover, 0) == LV_OPA_COVER) {
+        if (lv_obj_get_style_bg_opa(s_cover, 0) == LV_OPA_COVER)
+        {
             lv_obj_add_flag(s_cover, LV_OBJ_FLAG_HIDDEN);
         }
     }
-    if (!s_dark) {
+    if (!s_dark)
+    {
         int target = muse_settings_brightness();
-        if (s_preview_brightness >= 0) {
-            if (s_preview_brightness == target) {
+        if (s_preview_brightness >= 0)
+        {
+            if (s_preview_brightness == target)
+            {
                 s_preview_brightness = -1;
-            } else {
+            }
+            else
+            {
                 target = s_preview_brightness;
             }
         }
@@ -1277,8 +1395,9 @@ static bool update_sleep(void)
 /* Idle's label: whether a press reaches Hatch now or waits for Wi-Fi. */
 static const char *idle_name(muse_wifi_state_t wifi)
 {
-    static bool joined;   /* since boot: from then on, a drop is reconnecting */
-    switch (wifi) {
+    static bool joined; /* since boot: from then on, a drop is reconnecting */
+    switch (wifi)
+    {
     case MUSE_WIFI_CONNECTED:
         joined = true;
         return MODE_NAMES[MUSE_MODE_IDLE];
@@ -1287,7 +1406,7 @@ static const char *idle_name(muse_wifi_state_t wifi)
     case MUSE_WIFI_NO_NETWORK:
         return "SET UP WI-FI";
     case MUSE_WIFI_NOT_NEARBY:
-        return "NO WI-FI";   /* none of the saved networks is in range */
+        return "NO WI-FI"; /* none of the saved networks is in range */
     default:
         return joined ? "RECONNECTING" : "CONNECTING";
     }
@@ -1295,21 +1414,26 @@ static const char *idle_name(muse_wifi_state_t wifi)
 
 static void update_chrome(float now)
 {
-    if (now < s_next_settings_tick) {
+    if (now < s_next_settings_tick)
+    {
         return;
     }
     s_next_settings_tick = now + SETTINGS_TICK_S;
 
-    if (s_tv) {
+    if (s_tv)
+    {
         int page = lv_tileview_get_tile_active(s_tv) == s_settings;
         bool subpage = muse_settings_ui_in_subpage();
         bool swipe = !page || !subpage;
-        if (swipe != lv_obj_has_flag(s_tv, LV_OBJ_FLAG_SCROLLABLE)) {
+        if (swipe != lv_obj_has_flag(s_tv, LV_OBJ_FLAG_SCROLLABLE))
+        {
             lv_obj_set_flag(s_tv, LV_OBJ_FLAG_SCROLLABLE, swipe);
         }
         int shown = page * 2 + subpage;
-        if (shown != s_shown_page) {
-            for (int i = 0; i < 2; i++) {
+        if (shown != s_shown_page)
+        {
+            for (int i = 0; i < 2; i++)
+            {
                 lv_obj_set_style_bg_color(s_dots[i], lv_color_hex(i == page ? COLOR_ACCENT : COLOR_DOT_OFF), 0);
                 lv_obj_set_flag(s_dots[i], LV_OBJ_FLAG_HIDDEN, page && subpage);
             }
@@ -1323,14 +1447,16 @@ static void update_chrome(float now)
     muse_wifi_status(&w);
     bool joining = w.state == MUSE_WIFI_CONNECTING || w.state == MUSE_WIFI_FAILED;
     const char *wifi = w.state == MUSE_WIFI_CONNECTED || (joining && (int)(now * 2) % 2 == 0) ? LV_SYMBOL_WIFI : "";
-    if (strcmp(wifi, lv_label_get_text(s_wifi_icon)) != 0) {
+    if (strcmp(wifi, lv_label_get_text(s_wifi_icon)) != 0)
+    {
         lv_label_set_text(s_wifi_icon, wifi);
     }
     s_idle_name = idle_name(w.state);
     muse_ble_status_t b;
     muse_ble_status(&b);
     const char *ble = b.state != MUSE_BLE_OFF ? LV_SYMBOL_BLUETOOTH : "";
-    if (strcmp(ble, lv_label_get_text(s_ble_icon)) != 0) {
+    if (strcmp(ble, lv_label_get_text(s_ble_icon)) != 0)
+    {
         lv_label_set_text(s_ble_icon, ble);
         lv_obj_set_style_text_color(s_ble_icon, lv_color_hex(b.state == MUSE_BLE_CONNECTED ? COLOR_ACCENT : COLOR_DIM), 0);
     }
@@ -1349,36 +1475,48 @@ static void update_chrome(float now)
     int name_cw = lv_font_get_glyph_width(name_font, 'M', ' ');
     const char *shown = paired ? "" : b.name;
 #if LV_USE_SNAPSHOT
-    if (!paired && s_bench_demo) shown = "MuseGadget-DEMO";
+    if (!paired && s_bench_demo)
+        shown = "MuseGadget-DEMO";
 #endif
-    if (name_cw > 0 && (int)strlen(shown) * name_cw > (muse_board->rim_controls ? 280 : s_w)) {
+    if (name_cw > 0 && (int)strlen(shown) * name_cw > (muse_board->rim_controls ? 280 : s_w))
+    {
         const char *tail = strrchr(shown, '-');
-        if (tail && tail[1]) {
+        if (tail && tail[1])
+        {
             shown = tail + 1;
         }
     }
-    if (strcmp(shown, lv_label_get_text(s_name_lbl)) != 0) {
+    if (strcmp(shown, lv_label_get_text(s_name_lbl)) != 0)
+    {
         lv_label_set_text(s_name_lbl, shown);
     }
 
     /* The same card asks for the talk button when the Muse app pairs. */
     bool confirm = !b.passkey && muse_link_state() == MUSE_LINK_CONFIRM;
-    if (b.passkey || confirm) {
+    if (b.passkey || confirm)
+    {
         char code[24], hint[40];
-        if (confirm) {
-            if (muse_board->touch_talk || !muse_board->audio_init) {
+        if (confirm)
+        {
+            if (muse_board->touch_talk || !muse_board->audio_init)
+            {
                 strlcpy(code, "Tap screen", sizeof(code));
                 strlcpy(hint, "Tap to confirm pairing", sizeof(hint));
-            } else {
+            }
+            else
+            {
                 strlcpy(code, s_small ? "Press" : "Press button", sizeof(code));
                 snprintf(hint, sizeof(hint), s_small ? "%s button" : "Press the %s button", muse_board->talk_button);
             }
-        } else {
+        }
+        else
+        {
             snprintf(code, sizeof(code), "%06lu", (unsigned long)b.passkey);
             strlcpy(hint, s_small ? "Enter on phone" : "Enter it on your phone", sizeof(hint));
         }
         const char *title = confirm ? (s_small ? "Muse app" : "Pair with Muse app") : "Pairing code";
-        if (strcmp(code, lv_label_get_text(s_pair_code)) != 0) {
+        if (strcmp(code, lv_label_get_text(s_pair_code)) != 0)
+        {
             lv_label_set_text(s_pair_code, code);
             lv_label_set_text(s_pair_title, title);
             lv_label_set_text(s_pair_hint, hint);
@@ -1386,16 +1524,19 @@ static void update_chrome(float now)
     }
     lv_obj_set_flag(s_pair, LV_OBJ_FLAG_HIDDEN, !b.passkey && !confirm);
 
-    bool speaker = muse_settings_speaker_on();   /* also set from settings, the phone and serial */
-    if (s_speaker && (int)speaker != s_shown_speaker) {
+    bool speaker = muse_settings_speaker_on(); /* also set from settings, the phone and serial */
+    if (s_speaker && (int)speaker != s_shown_speaker)
+    {
         show_speaker(speaker);
     }
-    if (s_speaker && (paired && muse_board->audio_init) == lv_obj_has_flag(s_speaker, LV_OBJ_FLAG_HIDDEN)) {
+    if (s_speaker && (paired && muse_board->audio_init) == lv_obj_has_flag(s_speaker, LV_OBJ_FLAG_HIDDEN))
+    {
         lv_obj_set_flag(s_speaker, LV_OBJ_FLAG_HIDDEN, !paired || !muse_board->audio_init);
     }
     /* Unpaired, a press only says "SET UP MUSE FIRST", so the mic goes too.
      * While a reply's layout is up it decides; that's only ever paired. */
-    if (s_mic_icon && !muse_board->rim_controls && s_answer < 0 && (paired && muse_board->audio_init) == lv_obj_has_flag(s_mic_icon, LV_OBJ_FLAG_HIDDEN)) {
+    if (s_mic_icon && !muse_board->rim_controls && s_answer < 0 && (paired && muse_board->audio_init) == lv_obj_has_flag(s_mic_icon, LV_OBJ_FLAG_HIDDEN))
+    {
         lv_obj_set_flag(s_mic_icon, LV_OBJ_FLAG_HIDDEN, !paired || !muse_board->audio_init);
     }
 }
@@ -1414,14 +1555,19 @@ static void invalidate_meter(void)
 
 static void set_meter_visible(bool visible)
 {
-    if (s_small || visible == s_meter_visible) {
+    if (s_small || visible == s_meter_visible)
+    {
         return;
     }
     invalidate_meter();
-    for (int i = 0; i < METER_SEGS; i++) {
-        if (visible) {
+    for (int i = 0; i < METER_SEGS; i++)
+    {
+        if (visible)
+        {
             lv_obj_remove_flag(s_meter[i], LV_OBJ_FLAG_HIDDEN);
-        } else {
+        }
+        else
+        {
             lv_obj_add_flag(s_meter[i], LV_OBJ_FLAG_HIDDEN);
         }
     }
@@ -1431,23 +1577,32 @@ static void set_meter_visible(bool visible)
 
 static void update_power(float now)
 {
-    if (now < s_next_power_update) {
+    if (now < s_next_power_update)
+    {
         return;
     }
     s_next_power_update = now + 1.0f;
 
     muse_power_t p = muse_state_power();
     char buf[32];
-    if (p.battery_pct < 0) {
+    if (p.battery_pct < 0)
+    {
         strlcpy(buf, p.usb ? (s_small ? "USB" : "USB POWER") : "", sizeof(buf));
-    } else if (s_small) {
+    }
+    else if (s_small)
+    {
         snprintf(buf, sizeof(buf), "%s%d%%", p.charging ? "+" : "", p.battery_pct);
-    } else if (p.charging) {
+    }
+    else if (p.charging)
+    {
         snprintf(buf, sizeof(buf), "CHARGING %d%%", p.battery_pct);
-    } else {
+    }
+    else
+    {
         snprintf(buf, sizeof(buf), "BATTERY %d%%", p.battery_pct);
     }
-    if (strcmp(buf, lv_label_get_text(s_power_lbl)) != 0) {
+    if (strcmp(buf, lv_label_get_text(s_power_lbl)) != 0)
+    {
         lv_label_set_text(s_power_lbl, buf);
     }
 }
@@ -1457,48 +1612,64 @@ static void update_status(muse_mode_t mode, float now)
     uint32_t accent = muse_pixel_accent(mode);
     const char *name = mode == MUSE_MODE_IDLE ? s_idle_name : MODE_NAMES[mode];
 
-    if (name != s_shown_name) {
+    if (name != s_shown_name)
+    {
         lv_label_set_text(s_state_lbl, name);
         s_shown_name = name;
     }
-    if ((int)mode != s_shown_state) {
+    if ((int)mode != s_shown_state)
+    {
         lv_obj_set_style_text_color(s_state_lbl, lv_color_hex(accent), 0);
-        if (s_ring) {
+        if (s_ring)
+        {
             lv_obj_set_style_arc_color(s_ring, lv_color_hex(accent), LV_PART_INDICATOR);
-        } else {
+        }
+        else
+        {
             lv_obj_set_style_bg_color(s_bar, lv_color_hex(accent), 0);
         }
-        set_mic_color(mode == MUSE_MODE_LISTENING ? accent : COLOR_DIM);   /* legacy face icon */
+        set_mic_color(mode == MUSE_MODE_LISTENING ? accent : COLOR_DIM); /* legacy face icon */
         s_shown_state = (int)mode;
         s_shown_lit = -1;
     }
 
     /* Ring: phase progress while listening/speaking, a spinner while thinking. */
     int ring = 0;
-    if (mode == MUSE_MODE_LISTENING || mode == MUSE_MODE_SPEAKING) {
+    if (mode == MUSE_MODE_LISTENING || mode == MUSE_MODE_SPEAKING)
+    {
         ring = (int)(muse_state_progress() * RING_RANGE);
-    } else if (mode == MUSE_MODE_THINKING) {
+    }
+    else if (mode == MUSE_MODE_THINKING)
+    {
         ring = RING_RANGE / 6;
     }
-    if (s_ring && mode == MUSE_MODE_THINKING) {
+    if (s_ring && mode == MUSE_MODE_THINKING)
+    {
         /* Move the indicator rather than rotate the arc: a rotation redraws
          * the whole ring, and with it the whole screen. */
         int start = (int)(now * 300.0f) % 360;
         lv_arc_set_angles(s_ring, start, start + ring * 360 / RING_RANGE);
         s_ring_value = -1;
-    } else if (s_ring) {
-        if (s_ring_value < 0) {
-            lv_arc_set_bg_start_angle(s_ring, 0);   /* unchanged, but puts the value's angles back */
+    }
+    else if (s_ring)
+    {
+        if (s_ring_value < 0)
+        {
+            lv_arc_set_bg_start_angle(s_ring, 0); /* unchanged, but puts the value's angles back */
         }
-        if (ring != s_ring_value) {
+        if (ring != s_ring_value)
+        {
             lv_arc_set_value(s_ring, ring);
             s_ring_value = ring;
         }
-    } else {
+    }
+    else
+    {
         /* Bar along the bottom edge; a sliding segment while thinking. */
         int x = mode == MUSE_MODE_THINKING ? (int)(now * s_w) % s_w : 0;
         int w = ring * s_w / RING_RANGE;
-        if (ring != s_ring_value || x) {
+        if (ring != s_ring_value || x)
+        {
             lv_obj_set_width(s_bar, w);
             lv_obj_align(s_bar, LV_ALIGN_BOTTOM_LEFT, x, 0);
             s_ring_value = ring;
@@ -1508,11 +1679,14 @@ static void update_status(muse_mode_t mode, float now)
     /* The mic's meter; a reply's page has the room while answering. */
     bool meter = mode == MUSE_MODE_LISTENING;
     set_meter_visible(meter);
-    if (meter && !s_small) {
+    if (meter && !s_small)
+    {
         int lit = (int)lroundf(s_level * METER_SEGS);
-        if (lit != s_shown_lit || accent != s_shown_accent) {
+        if (lit != s_shown_lit || accent != s_shown_accent)
+        {
             invalidate_meter();
-            for (int i = 0; i < METER_SEGS; i++) {
+            for (int i = 0; i < METER_SEGS; i++)
+            {
                 /* Outer segments light last, like a centred VU. */
                 int rank = abs(2 * i - (METER_SEGS - 1)) / 2;
                 bool on = rank < (lit + 1) / 2;
@@ -1526,31 +1700,38 @@ static void update_status(muse_mode_t mode, float now)
     static char caption[MUSE_CAPTION_MAX];
     bool fresh = muse_state_caption(caption, sizeof(caption), &s_caption_version);
     int answer = -1;
-    if (s_reply_lbl) {
+    if (s_reply_lbl)
+    {
         /* The speaker picks the layout, even mid-reply: the voice task pages to fit. */
         int layout = muse_settings_speaker_on() ? ANSWER_HEARD : ANSWER_READ;
-        if (layout != s_page_for) {
+        if (layout != s_page_for)
+        {
             muse_state_set_page(s_answers[layout].cols, s_answers[layout].lines);
             s_page_for = layout;
         }
-        if (mode == MUSE_MODE_THINKING || mode == MUSE_MODE_SPEAKING) {
+        if (mode == MUSE_MODE_THINKING || mode == MUSE_MODE_SPEAKING)
+        {
             answer = layout;
         }
     }
-    if (answer != s_answer) {
+    if (answer != s_answer)
+    {
         set_answer(answer);
-        fresh = true;   /* the caption moves between labels */
+        fresh = true; /* the caption moves between labels */
     }
-    if (fresh) {
+    if (fresh)
+    {
         lv_obj_t *lbl = answer >= 0 ? s_reply_lbl : s_caption_lbl;
 #if CONFIG_MUSE_CJK_FONT
-        if (s_small) {
+        if (s_small)
+        {
             lv_obj_set_style_text_font(s_caption_lbl, muse_text_has_cjk(caption) ? caption_font() : &lv_font_unscii_8, 0);
         }
 #endif
         lv_label_set_text(lbl, caption);
         lv_obj_set_flag(lbl, LV_OBJ_FLAG_HIDDEN, !caption[0]);
-        if (s_reply_lbl) {
+        if (s_reply_lbl)
+        {
             lv_obj_add_flag(answer >= 0 ? s_caption_lbl : s_reply_lbl, LV_OBJ_FLAG_HIDDEN);
         }
     }
@@ -1562,7 +1743,7 @@ static volatile bool s_snapshot;
 static volatile int s_bench_page = -1;
 void muse_ui_bench_page(bool settings)
 {
-    s_bench_page = settings ? 1 : 0;   /* applied in the LVGL task */
+    s_bench_page = settings ? 1 : 0; /* applied in the LVGL task */
 }
 #endif
 
@@ -1572,18 +1753,24 @@ static void send_snapshot(void)
 {
 #if LV_USE_SNAPSHOT
     lv_draw_buf_t *buf = lv_snapshot_take(lv_screen_active(), LV_COLOR_FORMAT_RGB565);
-    if (!buf) {
+    if (!buf)
+    {
         return;
     }
-    enum { RAW = 144 };   /* lines must fit the driver's 256-byte TX ring */
+    enum
+    {
+        RAW = 144
+    }; /* lines must fit the driver's 256-byte TX ring */
     char hdr[48];
     int n = snprintf(hdr, sizeof(hdr), "\nSNAP BEGIN %d %d %d\n", (int)buf->header.w, (int)buf->header.h, RAW);
     muse_console_write(hdr, n);
     static unsigned char b64[4 * RAW / 3 + 4];
-    for (uint32_t y = 0; y < buf->header.h; y++) {
+    for (uint32_t y = 0; y < buf->header.h; y++)
+    {
         const unsigned char *p = buf->data + y * buf->header.stride;
         size_t left = buf->header.w * 2;
-        while (left) {
+        while (left)
+        {
             size_t chunk = left > RAW ? RAW : left, olen;
             mbedtls_base64_encode(b64, sizeof(b64), &olen, p, chunk);
             b64[olen++] = '\n';
@@ -1595,7 +1782,7 @@ static void send_snapshot(void)
     muse_console_write("SNAP END\n", 9);
     lv_draw_buf_destroy(buf);
 #else
-    muse_console_write("\nSNAP OFF\n", 10);   /* so snap.py can say why */
+    muse_console_write("\nSNAP OFF\n", 10); /* so snap.py can say why */
 #endif
 }
 
@@ -1604,17 +1791,54 @@ void muse_ui_request_snapshot(void)
     s_snapshot = true;
 }
 
+#if CONFIG_MUSE_CLOCK
+/* The idle screen's HH:MM, under the status label. Shown only while idle so it
+ * doesn't crowd a reply; reads --:-- until SNTP has set the time. */
+static void update_clock(muse_mode_t mode)
+{
+    if (!s_clock_lbl)
+    {
+        return;
+    }
+    bool show = (mode == MUSE_MODE_IDLE) && !(s_small && !s_tall && s_h < 200);
+    lv_obj_set_flag(s_clock_lbl, LV_OBJ_FLAG_HIDDEN, !show);
+    if (!show)
+    {
+        return;
+    }
+    char buf[8];
+    time_t t = time(NULL);
+    struct tm tmv;
+    localtime_r(&t, &tmv);
+    if (tmv.tm_year + 1900 < 2021)
+    {
+        strlcpy(buf, "--:--", sizeof(buf));
+    }
+    else
+    {
+        snprintf(buf, sizeof(buf), "%02d:%02d", tmv.tm_hour, tmv.tm_min);
+    }
+    if (strcmp(buf, lv_label_get_text(s_clock_lbl)) != 0)
+    {
+        lv_label_set_text(s_clock_lbl, buf);
+    }
+}
+#endif
+
 static void frame_tick(lv_timer_t *timer)
 {
 #if LV_USE_SNAPSHOT
-    if (s_bench_page >= 0) {
+    if (s_bench_page >= 0)
+    {
         bool settings = s_bench_page != 0;
         s_bench_page = -1;
-        if (s_tv) lv_tileview_set_tile(s_tv, settings ? s_settings : s_face, LV_ANIM_OFF);
+        if (s_tv)
+            lv_tileview_set_tile(s_tv, settings ? s_settings : s_face, LV_ANIM_OFF);
     }
 #endif
     update_control_hints(muse_state_mode(NULL));
-    if (s_snapshot) {
+    if (s_snapshot)
+    {
         s_snapshot = false;
         send_snapshot();
     }
@@ -1624,25 +1848,31 @@ static void frame_tick(lv_timer_t *timer)
     muse_mode_t mode = muse_state_mode(&mode_t);
     float now = (float)esp_timer_get_time() / 1e6f;
 
-    if (mode != s_last_mode) {
-        if (mode == MUSE_MODE_LISTENING) {
+    if (mode != s_last_mode)
+    {
+        if (mode == MUSE_MODE_LISTENING)
+        {
             image_hide_locked();
             muse_ui_show_face();
         }
         s_last_mode = mode;
     }
-    if (update_sleep()) {
+    if (update_sleep())
+    {
         return;
     }
     update_chrome(now);
-    if (muse_menu_tick(now)) {
+    if (muse_menu_tick(now))
+    {
         image_hide_locked();
-        return;   /* the menu covers the face */
+        return; /* the menu covers the face */
     }
-    if (s_image_dsc.data) {
-        return;   /* the image covers the face */
+    if (s_image_dsc.data)
+    {
+        return; /* the image covers the face */
     }
-    if (s_tv && lv_obj_get_scroll_x(s_tv) != 0) {
+    if (s_tv && lv_obj_get_scroll_x(s_tv) != 0)
+    {
         /* Off screen, or sliding to or from settings: hold still so the
          * slide gets the whole frame time. */
         return;
@@ -1663,6 +1893,9 @@ static void frame_tick(lv_timer_t *timer)
     invalidate_muse();
 
     update_status(mode, now);
+#if CONFIG_MUSE_CLOCK
+    update_clock(mode);
+#endif
 }
 
 esp_err_t muse_ui_start(void)
@@ -1678,18 +1911,22 @@ esp_err_t muse_ui_start(void)
     /* Small screens keep room for the status line and button icons. A narrow
      * one is as wide as Muse gets, in whole pixels. */
     s_canvas_px = s_small ? s_h * 3 / 4 : MUSE_PX_W * 5;
-    if (short_landscape) {
+    if (short_landscape)
+    {
         /* Leave the header's first 40 rows and bottom captions clear. */
         s_canvas_px = s_h * 2 / 3;
     }
-    if (muse_board->avatar_px > 0) {
+    if (muse_board->avatar_px > 0)
+    {
         s_canvas_px = muse_board->avatar_px;
     }
-    if (s_canvas_px > s_w) {
+    if (s_canvas_px > s_w)
+    {
         s_canvas_px = s_w / MUSE_PX_W * MUSE_PX_W;
     }
     s_dy = (s_h - 466) / 2;
-    if (!s_small && muse_board->round && s_dy < 0) {
+    if (!s_small && muse_board->round && s_dy < 0)
+    {
         /* A shorter screen moves the labels out towards its edges, but a
          * smaller circle's edges curve away from them. Keep them where they
          * are and shrink Muse to whole pixels that fit between them. */
@@ -1698,7 +1935,8 @@ esp_err_t muse_ui_start(void)
     }
 
     lv_display_t *disp = muse_board->display_start(&s_indev);
-    if (!disp) {
+    if (!disp)
+    {
         ESP_LOGE(TAG, "display init failed");
         return ESP_FAIL;
     }
@@ -1706,9 +1944,12 @@ esp_err_t muse_ui_start(void)
     s_image_mutex = xSemaphoreCreateMutex();
     muse_board->display_lock(-1);
     build_screen();
-    if (s_settings) {
+    if (s_settings)
+    {
         muse_settings_ui_build(s_settings);
-    } else {
+    }
+    else
+    {
         muse_menu_build(lv_screen_active(), s_w, s_h);
     }
     build_overlays();
@@ -1722,7 +1963,8 @@ esp_err_t muse_ui_start(void)
 
 void muse_ui_show_face(void)
 {
-    if (!s_tv) {
+    if (!s_tv)
+    {
         return;
     }
     lv_obj_add_flag(s_tv, LV_OBJ_FLAG_SCROLLABLE);
@@ -1731,7 +1973,8 @@ void muse_ui_show_face(void)
 
 void muse_ui_set_swipe_enabled(bool enabled)
 {
-    if (!s_tv) {
+    if (!s_tv)
+    {
         return;
     }
     lv_obj_set_flag(s_tv, LV_OBJ_FLAG_SCROLLABLE, enabled);
@@ -1747,7 +1990,8 @@ void muse_ui_preview_brightness(int pct)
 
 bool muse_ui_image_size(int *w, int *h)
 {
-    if (!s_ready || !heap_caps_get_total_size(MALLOC_CAP_SPIRAM)) {
+    if (!s_ready || !heap_caps_get_total_size(MALLOC_CAP_SPIRAM))
+    {
         return false;
     }
     *w = s_w;
@@ -1757,14 +2001,17 @@ bool muse_ui_image_size(int *w, int *h)
 
 bool muse_ui_image_draw(int x, int y, int w, int h, const uint16_t *pixels)
 {
-    if (!s_ready || x < 0 || y < 0 || w <= 0 || h <= 0 || x + w > s_w || y + h > s_h) {
+    if (!s_ready || x < 0 || y < 0 || w <= 0 || h <= 0 || x + w > s_w || y + h > s_h)
+    {
         return false;
     }
     xSemaphoreTake(s_image_mutex, portMAX_DELAY);
-    if (!s_image_buf) {
+    if (!s_image_buf)
+    {
         /* The first rectangle of an image: a black screen to draw onto. */
         s_image_buf = heap_caps_calloc((size_t)s_w * s_h, sizeof(uint16_t), MALLOC_CAP_SPIRAM);
-        if (!s_image_buf) {
+        if (!s_image_buf)
+        {
             xSemaphoreGive(s_image_mutex);
             return false;
         }
@@ -1772,17 +2019,22 @@ bool muse_ui_image_draw(int x, int y, int w, int h, const uint16_t *pixels)
         muse_state_set_asleep(false);
     }
     const uint8_t *src = (const uint8_t *)pixels;
-    for (int row = 0; row < h; row++) {
+    for (int row = 0; row < h; row++)
+    {
         uint16_t *dst = s_image_buf + (size_t)(y + row) * s_w + x;
-        for (int i = 0; i < w; i++, src += 2) {
+        for (int i = 0; i < w; i++, src += 2)
+        {
             dst[i] = (uint16_t)(src[0] << 8 | src[1]);
         }
     }
     lv_area_t *a = &s_image_area;
-    if (!s_image_dirty) {
-        *a = (lv_area_t){ x, y, x + w - 1, y + h - 1 };
+    if (!s_image_dirty)
+    {
+        *a = (lv_area_t){x, y, x + w - 1, y + h - 1};
         s_image_dirty = true;
-    } else {
+    }
+    else
+    {
         a->x1 = LV_MIN(a->x1, x);
         a->y1 = LV_MIN(a->y1, y);
         a->x2 = LV_MAX(a->x2, x + w - 1);
@@ -1794,13 +2046,15 @@ bool muse_ui_image_draw(int x, int y, int w, int h, const uint16_t *pixels)
 
 void muse_ui_image_hide(void)
 {
-    if (!s_ready) {
+    if (!s_ready)
+    {
         return;
     }
     muse_board->display_lock(-1);
     image_hide_locked();
 #if CONFIG_MUSE_WATCHER_CAMERA
-    if (s_camera_hint) lv_obj_add_flag(s_camera_hint, LV_OBJ_FLAG_HIDDEN);
+    if (s_camera_hint)
+        lv_obj_add_flag(s_camera_hint, LV_OBJ_FLAG_HIDDEN);
 #endif
     muse_board->display_unlock();
 }
@@ -1808,10 +2062,13 @@ void muse_ui_image_hide(void)
 #if CONFIG_MUSE_WATCHER_CAMERA
 void muse_ui_camera_hint(bool visible)
 {
-    if (!s_ready || !s_camera_hint) return;
+    if (!s_ready || !s_camera_hint)
+        return;
     muse_board->display_lock(-1);
-    if (visible) lv_obj_remove_flag(s_camera_hint, LV_OBJ_FLAG_HIDDEN);
-    else lv_obj_add_flag(s_camera_hint, LV_OBJ_FLAG_HIDDEN);
+    if (visible)
+        lv_obj_remove_flag(s_camera_hint, LV_OBJ_FLAG_HIDDEN);
+    else
+        lv_obj_add_flag(s_camera_hint, LV_OBJ_FLAG_HIDDEN);
     muse_board->display_unlock();
 }
 #endif

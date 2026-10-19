@@ -49,11 +49,13 @@
 #include "lwip/netdb.h"
 #include "lwip/sockets.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/idf_additions.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "sdkconfig.h"
 
+#include "minimp3.h"
 #include "muse_chat.h"
 #include "muse_chat_priv.h"
 #include "muse_routellm.h"
@@ -67,22 +69,31 @@ static const char *TAG = "muse_routellm";
 extern const uint8_t routellm_ca_pem_start[] asm("_binary_routellm_ca_pem_start");
 
 #define MIC_RATE 16000
-#define EV_TEXT 72                /* one caption line, as the other backends use */
-#define REPLY_MAX 1024            /* reply text kept for the captions */
-#define RESP_MAX (16 * 1024)      /* the JSON answer we read back */
-#define READ_CHARS_PER_S 14       /* caption scroll, about speaking pace */
-#define SETTLE_US (3 * 1000000LL) /* quiet after the reply before the turn ends */
+#define EV_TEXT 72                  /* one caption line, as the other backends use */
+#define REPLY_MAX 1024              /* reply text kept for the captions */
+#define RESP_MAX (16 * 1024)        /* the JSON answer we read back */
+#define AUDIO_RESP_MAX (256 * 1024) /* a spoken reply also carries base64 MP3 */
+#define MAX_SPEAK_SECONDS 15        /* cap on decoded reply speech */
+#define READ_CHARS_PER_S 14         /* caption scroll, about speaking pace */
+#define SETTLE_US (3 * 1000000LL)   /* quiet after the reply before the turn ends */
 #define REQUEST_TIMEOUT_US (60 * 1000000LL)
 #define WORKER_STACK 10240
 
 #define SYS_PROMPT "You are a helpful voice assistant on a small device. Reply in one or two short sentences."
+
+#if CONFIG_MUSE_ROUTELLM_SPEAK
+#define RL_VOICE CONFIG_MUSE_ROUTELLM_VOICE
+#else
+#define RL_VOICE "alloy"
+#endif
 
 typedef enum
 {
     RL_IDLE,
     RL_RECORDING,
     RL_SENDING,
-    RL_REPLY
+    RL_REPLY,
+    RL_SPEAKING
 } phase_t;
 
 typedef struct
@@ -97,6 +108,7 @@ typedef struct
     int16_t *pcm;
     size_t frames;
     uint32_t gen;
+    bool speak;
     char key[MUSE_ROUTELLM_KEY_MAX + 1];
 } wk_t;
 
@@ -113,12 +125,17 @@ static char s_shown[EV_TEXT];
 static char s_error[EV_TEXT];
 static char s_key[MUSE_ROUTELLM_KEY_MAX + 1];
 static bool s_sent_emitted;
+/* Decoded 16 kHz reply speech the voice task drains through turn_read. */
+static int16_t *s_audio;
+static size_t s_audio_frames, s_audio_pos;
 
 /* Shared with the worker, under s_lock. */
 static uint32_t s_gen;
 static bool s_uploaded;
 static bool s_result_ready, s_result_ok;
 static char s_result_text[REPLY_MAX];
+static int16_t *s_result_audio; /* decoded reply speech, handed to the voice task */
+static size_t s_result_audio_frames;
 
 /* Connectivity test (Test connection / >chatllm_test), under s_lock. */
 typedef enum
@@ -280,9 +297,352 @@ static void set_public_dns(void)
     ESP_LOGI(TAG, "set_public_dns: main=%s backup=%s", esp_err_to_name(e1), esp_err_to_name(e2));
 }
 
-static void do_request(const wk_t *w, bool *ok, char *text, size_t cap)
+/* ---- Spoken replies: decode the model's MP3 into 16 kHz PCM ---- */
+
+static int b64_val(char c)
+{
+    if (c >= 'A' && c <= 'Z')
+        return c - 'A';
+    if (c >= 'a' && c <= 'z')
+        return c - 'a' + 26;
+    if (c >= '0' && c <= '9')
+        return c - '0' + 52;
+    if (c == '+')
+        return 62;
+    if (c == '/')
+        return 63;
+    return -1;
+}
+
+/* Decodes base64 in[in_len] into out (caller-sized, >= in_len/4*3); returns the
+ * byte count. Skips '=', whitespace and anything else outside the alphabet. */
+static size_t b64_decode(const char *in, size_t in_len, uint8_t *out)
+{
+    uint32_t acc = 0;
+    int bits = 0;
+    size_t o = 0;
+    for (size_t i = 0; i < in_len; i++)
+    {
+        int v = b64_val(in[i]);
+        if (v < 0)
+        {
+            continue;
+        }
+        acc = (acc << 6) | (uint32_t)v;
+        bits += 6;
+        if (bits >= 8)
+        {
+            bits -= 8;
+            out[o++] = (uint8_t)(acc >> bits);
+        }
+    }
+    return o;
+}
+
+/* Finds the string value of "key" in JSON `hay` (from its start); returns the
+ * value's first char and sets *end to the closing quote, or NULL. The span
+ * isn't unescaped: base64 has no escapes and a transcript is unescaped on copy. */
+static const char *json_find_string(const char *hay, const char *key, const char **end)
+{
+    char pat[24];
+    int n = snprintf(pat, sizeof(pat), "\"%s\"", key);
+    const char *p = hay;
+    while (n > 0 && (p = strstr(p, pat)) != NULL)
+    {
+        const char *q = p + n;
+        while (*q == ' ' || *q == '\t' || *q == '\n' || *q == '\r')
+        {
+            q++;
+        }
+        if (*q != ':')
+        {
+            p += n;
+            continue;
+        }
+        q++;
+        while (*q == ' ' || *q == '\t' || *q == '\n' || *q == '\r')
+        {
+            q++;
+        }
+        if (*q != '"')
+        {
+            p += n;
+            continue;
+        }
+        q++;
+        const char *e = q;
+        while (*e)
+        {
+            if (*e == '\\' && e[1])
+            {
+                e += 2;
+                continue;
+            }
+            if (*e == '"')
+            {
+                break;
+            }
+            e++;
+        }
+        if (*e != '"')
+        {
+            return NULL;
+        }
+        *end = e;
+        return q;
+    }
+    return NULL;
+}
+
+/* Copies JSON string span start..end into out[cap], unescaping the handful of
+ * escapes a transcript might carry. */
+static void json_unescape(const char *start, const char *end, char *out, size_t cap)
+{
+    size_t o = 0;
+    for (const char *p = start; p < end && o + 1 < cap; p++)
+    {
+        char c = *p;
+        if (c == '\\' && p + 1 < end)
+        {
+            p++;
+            switch (*p)
+            {
+            case 'n':
+            case 'r':
+            case 't':
+                c = ' ';
+                break;
+            default:
+                c = *p;
+                break;
+            }
+        }
+        out[o++] = c;
+    }
+    out[o] = '\0';
+}
+
+/* Decodes base64 MP3 `b64`[b64_len] into a fresh 16 kHz mono PCM buffer
+ * (*pcm_out and *frames_out), capped at MAX_SPEAK_SECONDS. True on any audio;
+ * the caller owns and frees *pcm_out. PSRAM throughout, so the big buffers stay
+ * out of scarce internal RAM. */
+static bool decode_mp3_16k(const char *b64, size_t b64_len, int16_t **pcm_out, size_t *frames_out)
+{
+    *pcm_out = NULL;
+    *frames_out = 0;
+
+    uint8_t *mp3 = heap_caps_malloc(b64_len / 4 * 3 + 4, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!mp3)
+    {
+        return false;
+    }
+    size_t mp3_len = b64_decode(b64, b64_len, mp3);
+    if (mp3_len < 4)
+    {
+        free(mp3);
+        return false;
+    }
+
+    mp3dec_t *dec = heap_caps_malloc(sizeof(mp3dec_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    int16_t *frame = heap_caps_malloc(MINIMP3_MAX_SAMPLES_PER_FRAME * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!dec || !frame)
+    {
+        free(mp3);
+        free(dec);
+        free(frame);
+        return false;
+    }
+    mp3dec_init(dec);
+
+    int16_t *nat = NULL; /* native-rate mono PCM */
+    size_t nat_n = 0, nat_cap = 0;
+    int hz = 0;
+    size_t off = 0;
+    while (off < mp3_len)
+    {
+        mp3dec_frame_info_t info;
+        int samples = mp3dec_decode_frame(dec, mp3 + off, (int)(mp3_len - off), frame, &info);
+        if (info.frame_bytes <= 0)
+        {
+            break;
+        }
+        off += (size_t)info.frame_bytes;
+        if (samples <= 0)
+        {
+            continue;
+        }
+        if (!nat)
+        {
+            hz = info.hz > 0 ? info.hz : 24000;
+            nat_cap = (size_t)hz * MAX_SPEAK_SECONDS;
+            nat = heap_caps_malloc(nat_cap * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            if (!nat)
+            {
+                break;
+            }
+        }
+        for (int i = 0; i < samples && nat_n < nat_cap; i++)
+        {
+            int s = info.channels >= 2 ? ((int)frame[2 * i] + frame[2 * i + 1]) / 2 : frame[i];
+            nat[nat_n++] = (int16_t)s;
+        }
+        if (nat_n >= nat_cap)
+        {
+            break;
+        }
+    }
+    free(mp3);
+    free(frame);
+    free(dec);
+
+    if (!nat || nat_n == 0 || hz <= 0)
+    {
+        free(nat);
+        return false;
+    }
+    if (hz == MIC_RATE)
+    {
+        *pcm_out = nat;
+        *frames_out = nat_n;
+        return true;
+    }
+
+    /* Linear resample to 16 kHz, in integers. */
+    size_t out_n = (size_t)((uint64_t)nat_n * MIC_RATE / (uint64_t)hz);
+    int16_t *out = heap_caps_malloc((out_n ? out_n : 1) * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!out)
+    {
+        free(nat);
+        return false;
+    }
+    for (size_t o = 0; o < out_n; o++)
+    {
+        uint64_t num = (uint64_t)o * (uint64_t)hz;
+        size_t i = (size_t)(num / MIC_RATE);
+        uint32_t frac = (uint32_t)(num % MIC_RATE);
+        int a = nat[i];
+        int b = (i + 1 < nat_n) ? nat[i + 1] : a;
+        out[o] = (int16_t)(a + (int)((int64_t)(b - a) * frac / MIC_RATE));
+    }
+    free(nat);
+    *pcm_out = out;
+    *frames_out = out_n;
+    return true;
+}
+
+/* minimp3's mp3dec_decode_frame puts ~16 KB of scratch on the stack, more than
+ * the worker task has, so the decode runs on a short-lived task with a roomy
+ * PSRAM stack (the trick muse_chat_session uses for the same reason). */
+typedef struct
+{
+    const char *b64;
+    size_t b64_len;
+    int16_t *pcm;
+    size_t frames;
+    TaskHandle_t caller;
+} rl_dec_t;
+
+static void decode_task(void *arg)
+{
+    rl_dec_t *d = arg;
+    decode_mp3_16k(d->b64, d->b64_len, &d->pcm, &d->frames);
+    xTaskNotifyGive(d->caller);
+    vTaskSuspend(NULL); /* the caller deletes us, which frees the PSRAM stack */
+}
+
+static bool decode_mp3_16k_bigstack(const char *b64, size_t b64_len, int16_t **pcm_out, size_t *frames_out)
+{
+    rl_dec_t d = {b64, b64_len, NULL, 0, xTaskGetCurrentTaskHandle()};
+    TaskHandle_t task;
+    if (xTaskCreatePinnedToCoreWithCaps(decode_task, "rl_mp3", 32 * 1024, &d, 5, &task,
+                                        tskNO_AFFINITY, MALLOC_CAP_SPIRAM) != pdPASS)
+    {
+        *pcm_out = NULL;
+        *frames_out = 0;
+        return false;
+    }
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    vTaskDeleteWithCaps(task);
+    *pcm_out = d.pcm;
+    *frames_out = d.frames;
+    return d.pcm != NULL;
+}
+
+/* Pulls the transcript and decodes the spoken MP3 out of a speak response.
+ * Sets *ok, fills text with the transcript (for captions), and on success
+ * stores decoded 16 kHz PCM in *audio and *audio_frames (caller owns it).
+ * Avoids cJSON so the large base64 body never lands in scarce internal RAM. */
+static void parse_spoken(const char *resp, int status, bool *ok, char *text, size_t cap,
+                         int16_t **audio, size_t *audio_frames)
 {
     *ok = false;
+    *audio = NULL;
+    *audio_frames = 0;
+
+    if (status < 200 || status >= 300)
+    {
+        const char *mend;
+        const char *m = json_find_string(resp, "message", &mend); /* error.message */
+        if (m)
+        {
+            char msg[EV_TEXT];
+            json_unescape(m, mend, msg, sizeof(msg));
+            snprintf(text, cap, "CHATLLM: %.*s", (int)cap - 12, msg);
+        }
+        else
+        {
+            snprintf(text, cap, "CHATLLM HTTP %d", status);
+        }
+        return;
+    }
+
+    const char *aud = strstr(resp, "\"audios\"");
+    const char *tend;
+    const char *tr = aud ? json_find_string(aud, "transcript", &tend) : NULL;
+    if (tr)
+    {
+        json_unescape(tr, tend, text, cap);
+    }
+    else
+    {
+        /* No audio came back: fall back to any text content. */
+        const char *cend;
+        const char *c = json_find_string(resp, "content", &cend);
+        if (c && cend > c)
+        {
+            json_unescape(c, cend, text, cap);
+        }
+    }
+
+    if (aud)
+    {
+        const char *dend;
+        const char *d = json_find_string(aud, "data", &dend);
+        if (d && dend > d)
+        {
+            decode_mp3_16k_bigstack(d, (size_t)(dend - d), audio, audio_frames);
+        }
+    }
+
+    if (text[0] || *audio)
+    {
+        *ok = true;
+        if (!text[0])
+        {
+            strlcpy(text, "(spoken reply)", cap);
+        }
+    }
+    else
+    {
+        strlcpy(text, "CHATLLM SENT NO REPLY", cap);
+    }
+}
+
+static void do_request(const wk_t *w, bool *ok, char *text, size_t cap, int16_t **audio, size_t *audio_frames)
+{
+    *ok = false;
+    *audio = NULL;
+    *audio_frames = 0;
     set_public_dns();
     size_t bytes = w->frames * 2;
     size_t wav_len = MUSE_HATCH_WAV_HEADER + bytes;
@@ -307,13 +667,27 @@ static void do_request(const wk_t *w, bool *ok, char *text, size_t cap)
     b64[b64_len] = '\0';
     free(wav);
 
-    char head[512];
-    int hn = snprintf(head, sizeof(head),
+    char head[640];
+    int hn;
+    if (w->speak)
+    {
+        hn = snprintf(head, sizeof(head),
+                      "{\"model\":\"%s\",\"modalities\":[\"text\",\"audio\"],"
+                      "\"audio\":{\"voice\":\"%s\",\"format\":\"mp3\"},\"messages\":["
+                      "{\"role\":\"system\",\"content\":\"%s\"},"
+                      "{\"role\":\"user\",\"content\":[{\"type\":\"input_audio\","
+                      "\"input_audio\":{\"data\":\"",
+                      CONFIG_MUSE_ROUTELLM_MODEL, RL_VOICE, SYS_PROMPT);
+    }
+    else
+    {
+        hn = snprintf(head, sizeof(head),
                       "{\"model\":\"%s\",\"modalities\":[\"text\"],\"messages\":["
                       "{\"role\":\"system\",\"content\":\"%s\"},"
                       "{\"role\":\"user\",\"content\":[{\"type\":\"input_audio\","
                       "\"input_audio\":{\"data\":\"",
                       CONFIG_MUSE_ROUTELLM_MODEL, SYS_PROMPT);
+    }
     static const char tail[] = "\",\"format\":\"wav\"}}]}]}";
 
     char url[256];
@@ -365,23 +739,24 @@ static void do_request(const wk_t *w, bool *ok, char *text, size_t cap)
     (void)clen;
     int status = esp_http_client_get_status_code(client);
 
-    char *resp = heap_caps_malloc(RESP_MAX, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    char *resp = heap_caps_malloc(w->speak ? AUDIO_RESP_MAX : RESP_MAX, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!resp)
     {
         esp_http_client_cleanup(client);
         strlcpy(text, "OUT OF MEMORY", cap);
         return;
     }
+    int resp_cap = w->speak ? AUDIO_RESP_MAX : RESP_MAX;
     int total = 0;
     for (;;)
     {
-        int r = esp_http_client_read(client, resp + total, RESP_MAX - 1 - total);
+        int r = esp_http_client_read(client, resp + total, resp_cap - 1 - total);
         if (r <= 0)
         {
             break;
         }
         total += r;
-        if (total >= RESP_MAX - 1)
+        if (total >= resp_cap - 1)
         {
             break;
         }
@@ -390,8 +765,15 @@ static void do_request(const wk_t *w, bool *ok, char *text, size_t cap)
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
 
-    ESP_LOGI(TAG, "RouteLLM HTTP %d, %d bytes", status, total);
-    parse_reply(resp, status, ok, text, cap);
+    ESP_LOGI(TAG, "RouteLLM HTTP %d, %d bytes%s", status, total, w->speak ? " (spoken)" : "");
+    if (w->speak)
+    {
+        parse_spoken(resp, status, ok, text, cap, audio, audio_frames);
+    }
+    else
+    {
+        parse_reply(resp, status, ok, text, cap);
+    }
     free(resp);
 }
 
@@ -401,16 +783,23 @@ static void worker(void *arg)
     bool ok = false;
     char text[REPLY_MAX];
     text[0] = '\0';
-    do_request(w, &ok, text, sizeof(text));
+    int16_t *audio = NULL;
+    size_t audio_frames = 0;
+    do_request(w, &ok, text, sizeof(text), &audio, &audio_frames);
     free(w->pcm);
     xSemaphoreTake(s_lock, portMAX_DELAY);
     if (w->gen == s_gen)
     {
         s_result_ok = ok;
         strlcpy(s_result_text, text, sizeof(s_result_text));
+        free(s_result_audio);
+        s_result_audio = audio;
+        s_result_audio_frames = audio_frames;
         s_result_ready = true;
+        audio = NULL;
     }
     xSemaphoreGive(s_lock);
+    free(audio); /* a superseded turn: drop the decoded speech */
     free(w);
     vTaskDelete(NULL);
 }
@@ -449,6 +838,8 @@ static void pump(void)
         bool uploaded, ready, ok = false;
         char text[REPLY_MAX];
         text[0] = '\0';
+        int16_t *aud = NULL;
+        size_t audf = 0;
         xSemaphoreTake(s_lock, portMAX_DELAY);
         uploaded = s_uploaded;
         ready = s_result_ready;
@@ -456,6 +847,10 @@ static void pump(void)
         {
             ok = s_result_ok;
             strlcpy(text, s_result_text, sizeof(text));
+            aud = s_result_audio;
+            audf = s_result_audio_frames;
+            s_result_audio = NULL;
+            s_result_audio_frames = 0;
         }
         xSemaphoreGive(s_lock);
         if (uploaded && !s_sent_emitted)
@@ -478,11 +873,37 @@ static void pump(void)
                     emit(MUSE_HATCH_EV_SENT, NULL);
                 }
                 strlcpy(s_reply, text, sizeof(s_reply));
+                free(s_audio);
+                s_audio = aud;
+                s_audio_frames = audf;
+                s_audio_pos = 0;
+                aud = NULL;
                 s_show_us = now;
                 s_reply_us = now;
                 s_shown[0] = '\0';
-                s_phase = RL_REPLY;
-                scroll(now);
+                if (s_audio_frames > 0)
+                {
+                    /* Speech drives the captions and the turn's end: hand the
+                     * voice task the opening page, then DONE so it plays the
+                     * audio out through turn_read and stops. */
+                    s_phase = RL_SPEAKING;
+                    char line[EV_TEXT];
+                    if (muse_hatch_caption_at(s_reply, 0, line, sizeof(line)))
+                    {
+                        strlcpy(s_shown, line, sizeof(s_shown));
+                        emit(MUSE_HATCH_EV_REPLY, line);
+                    }
+                    else
+                    {
+                        emit(MUSE_HATCH_EV_REPLY, s_reply);
+                    }
+                    emit(MUSE_HATCH_EV_DONE, NULL);
+                }
+                else
+                {
+                    s_phase = RL_REPLY;
+                    scroll(now);
+                }
             }
         }
         else if (now - s_send_us > REQUEST_TIMEOUT_US)
@@ -490,12 +911,20 @@ static void pump(void)
             emit(MUSE_HATCH_EV_ERROR, "NO REPLY FROM CHATLLM");
             s_phase = RL_IDLE;
         }
+        free(aud); /* non-NULL only if a result arrived but wasn't adopted */
     }
     if (s_phase == RL_REPLY)
     {
         if (scroll(now) && now - s_reply_us > SETTLE_US)
         {
             emit(MUSE_HATCH_EV_DONE, NULL);
+            s_phase = RL_IDLE;
+        }
+    }
+    if (s_phase == RL_SPEAKING)
+    {
+        if (!s_audio || s_audio_pos >= s_audio_frames)
+        {
             s_phase = RL_IDLE;
         }
     }
@@ -918,12 +1347,19 @@ void muse_hatch_turn_begin(void)
     s_gen++;
     s_result_ready = false;
     s_uploaded = false;
+    free(s_result_audio);
+    s_result_audio = NULL;
+    s_result_audio_frames = 0;
     xSemaphoreGive(s_lock);
     s_sent_emitted = false;
     xQueueReset(s_events);
     free(s_pcm);
     s_pcm = NULL;
     s_pcm_frames = 0;
+    free(s_audio);
+    s_audio = NULL;
+    s_audio_frames = 0;
+    s_audio_pos = 0;
     s_reply[0] = '\0';
     s_shown[0] = '\0';
     s_error[0] = '\0';
@@ -988,6 +1424,10 @@ void muse_hatch_turn_end(void)
     }
     w->pcm = s_pcm;
     w->frames = s_pcm_frames;
+    w->speak = false;
+#if CONFIG_MUSE_ROUTELLM_SPEAK
+    w->speak = muse_settings_speaker_on();
+#endif
     strlcpy(w->key, s_key, sizeof(w->key));
     xSemaphoreTake(s_lock, portMAX_DELAY);
     w->gen = s_gen;
@@ -1013,10 +1453,17 @@ void muse_hatch_turn_cancel(void)
     xSemaphoreTake(s_lock, portMAX_DELAY);
     s_gen++;
     s_result_ready = false;
+    free(s_result_audio);
+    s_result_audio = NULL;
+    s_result_audio_frames = 0;
     xSemaphoreGive(s_lock);
     free(s_pcm);
     s_pcm = NULL;
     s_pcm_frames = 0;
+    free(s_audio);
+    s_audio = NULL;
+    s_audio_frames = 0;
+    s_audio_pos = 0;
     s_phase = RL_IDLE;
     xQueueReset(s_events);
 }
@@ -1035,9 +1482,18 @@ muse_hatch_ev_t muse_hatch_turn_event(char *text, size_t cap)
 
 bool muse_hatch_turn_caption(size_t played, char *out, size_t cap)
 {
-    (void)played; /* no speech: the reply's page follows the reading pace */
     size_t len = strlen(s_reply);
-    if (s_phase != RL_REPLY || !len)
+    if (!len)
+    {
+        return false;
+    }
+    if (s_audio_frames > 0)
+    {
+        /* Speech: page the transcript by how much audio has played. */
+        size_t at = (size_t)((uint64_t)played * len / s_audio_frames);
+        return muse_hatch_caption_at(s_reply, at < len ? at : len - 1, out, cap);
+    }
+    if (s_phase != RL_REPLY)
     {
         return false;
     }
@@ -1047,8 +1503,17 @@ bool muse_hatch_turn_caption(size_t played, char *out, size_t cap)
 
 size_t muse_hatch_turn_read(int16_t *pcm, size_t frames, int wait_ms)
 {
-    (void)pcm;
-    (void)frames;
+    if (pcm && frames && s_audio && s_audio_pos < s_audio_frames)
+    {
+        size_t n = s_audio_frames - s_audio_pos;
+        if (n > frames)
+        {
+            n = frames;
+        }
+        memcpy(pcm, s_audio + s_audio_pos, n * sizeof(int16_t));
+        s_audio_pos += n;
+        return n;
+    }
     if (wait_ms > 0)
     {
         vTaskDelay(pdMS_TO_TICKS(wait_ms) ? pdMS_TO_TICKS(wait_ms) : 1);

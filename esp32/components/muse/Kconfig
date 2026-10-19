@@ -199,6 +199,26 @@ menu "Muse"
             Without it those characters show as boxes. Hangul isn't
             included.
 
+    config MUSE_CLOCK
+        bool "Show a clock on the idle screen"
+        depends on MUSE_ENABLED
+        default n
+        help
+            Once the network sets the time over SNTP, show the current time
+            in HH:MM under the status label on the idle screen. Until it
+            syncs, and when it can't, it reads --:--. The time is queried once
+            at startup; the device's clock ticks it along from there.
+
+    config MUSE_CLOCK_TZ
+        string "Clock timezone (POSIX TZ string)"
+        depends on MUSE_CLOCK
+        default "CST-8"
+        help
+            A POSIX TZ string for the local time shown. "CST-8" is UTC+8
+            (China/Singapore). "EST5EDT,M3.2.0,M11.1.0" is US Eastern with
+            DST, "GMT0BST,M3.5.0/1,M10.5.0" is UK time. Note POSIX signs are
+            inverted: the number is hours west of UTC, so -8 means UTC+8.
+
     config MUSE_JC3248W535_MIC_GPIO
         int "JC3248W535: GPIO for an external I2S mic's data (SD) line"
         depends on MUSE_BOARD_GUITION_JC3248W535
@@ -277,6 +297,25 @@ menu "Muse"
             over serial (">chatllm_key=...", stored in NVS) takes precedence.
             Leaving this empty keeps the secret out of the firmware image;
             prefer that and set the key over serial.
+
+    config MUSE_ROUTELLM_SPEAK
+        bool "Speak RouteLLM replies aloud (ChatLLM text-to-speech)"
+        depends on MUSE_CHAT_ROUTELLM
+        default n
+        help
+            Ask the model for spoken audio alongside the text reply and play
+            it through the speaker. The reply's audio (MP3) is decoded on the
+            device and the caption follows the speech. The speaker toggle on
+            the face or in settings still mutes it, in which case the reply is
+            shown as text only. Costs extra tokens and download per turn.
+
+    config MUSE_ROUTELLM_VOICE
+        string "Voice for spoken replies"
+        depends on MUSE_ROUTELLM_SPEAK
+        default "alloy"
+        help
+            The OpenAI-style voice name sent as audio.voice, such as alloy,
+            echo, fable, onyx, nova or shimmer.
 
     config MUSE_HATCH
         bool "Muse's own voice session"

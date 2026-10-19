@@ -1143,31 +1143,26 @@ void muse_ui_stop(void)
         return;
     }
     muse_board->display_lock(-1);
-    if (s_frame_timer)
-    {
+    if (s_frame_timer) {
         lv_timer_del(s_frame_timer);
         s_frame_timer = NULL;
     }
     image_hide_locked();
-    if (s_image)
-    {
-        lv_obj_del(s_image);
-        s_image = NULL;
+    if (s_settings) {
+        lv_obj_del(s_settings);
+        s_settings = NULL;
     }
-    if (s_cover)
-    {
-        lv_obj_del(s_cover);
-        s_cover = NULL;
-    }
-    if (s_tv)
-    {
+    if (s_tv) {
         lv_obj_del(s_tv);
         s_tv = NULL;
     }
-    if (s_settings)
-    {
-        lv_obj_del(s_settings);
-        s_settings = NULL;
+    if (s_cover) {
+        lv_obj_del(s_cover);
+        s_cover = NULL;
+    }
+    if (s_image) {
+        lv_obj_del(s_image);
+        s_image = NULL;
     }
     s_ready = false;
     muse_board->display_unlock();

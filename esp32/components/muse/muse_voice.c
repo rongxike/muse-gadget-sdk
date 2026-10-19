@@ -546,9 +546,8 @@ static void hold_rec(bool tried)
     }
     int16_t *pcm = heap_caps_realloc(s_rec, s_rec_n * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!pcm) {
-        /* Preserve the original allocation so the caller doesn't fail with a
-         * dangling buffer while the note is still being recorded. */
-        drop_rec();
+        /* Realloc failed: keep the original allocation so the in-flight note
+         * remains owned and can be freed later without a dangling pointer. */
         go_idle("OUT OF MEMORY");
         return;
     }

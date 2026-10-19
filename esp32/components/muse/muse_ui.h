@@ -27,6 +27,7 @@
  * settings one swipe to the left. Also owns screen sleep and brightness.
  */
 esp_err_t muse_ui_start(void);
+void muse_ui_stop(void);
 
 /* From any task: the screen has gone dark for sleep (and not yet woken). */
 bool muse_ui_dark(void);

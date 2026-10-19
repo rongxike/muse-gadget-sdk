@@ -442,9 +442,15 @@ static const char *not_ready_reason(void)
     muse_hatch_status_t st;
     muse_hatch_status(&st);
     switch (st.state) {
+#if CONFIG_MUSE_CHAT_ROUTELLM
+    case MUSE_HATCH_NOT_SET: return "SET CHATLLM KEY";
+    case MUSE_HATCH_OFFLINE: return "NO WI-FI";
+    default: return "CAN'T REACH CHATLLM";
+#else
     case MUSE_HATCH_NOT_SET: return "SET UP MUSE FIRST";
     case MUSE_HATCH_OFFLINE: return "NO WI-FI";
     default: return "CAN'T REACH MUSE";
+#endif
     }
 }
 

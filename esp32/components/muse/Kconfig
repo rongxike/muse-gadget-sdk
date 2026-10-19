@@ -226,9 +226,61 @@ menu "Muse"
             to pay for the CPU's light-sleep retention memory, which it
             takes at boot and keeps.
 
+    config MUSE_CHAT_ROUTELLM
+        bool "Use Abacus.ai RouteLLM (ChatLLM) instead of Muse's servers"
+        depends on MUSE_ENABLED && SPIRAM
+        default n
+        help
+            Replaces Muse's voice session with a direct HTTPS call to the
+            OpenAI-compatible RouteLLM API (routellm.abacus.ai). Each
+            push-to-talk turn records audio, posts it to an audio-capable
+            model, and shows the text reply as captions. Needs PSRAM. In this
+            mode the gadget does not use Muse's agent, the home-network tunnel,
+            or Muse-app pairing for chat. Set the API key over serial with
+            ">chatllm_key=..." (stored in NVS); get one from abacus.ai
+            (ChatLLM > RouteLLM API).
+
+    config MUSE_ROUTELLM_BASE_URL
+        string "RouteLLM API base URL"
+        depends on MUSE_CHAT_ROUTELLM
+        default "https://routellm.abacus.ai/v1"
+        help
+            The OpenAI-compatible base URL. Self-serve ChatLLM accounts use
+            https://routellm.abacus.ai/v1; enterprise workspaces use
+            https://<workspace>.abacus.ai/v1.
+
+    config MUSE_ROUTELLM_MODEL
+        string "RouteLLM model for voice turns"
+        depends on MUSE_CHAT_ROUTELLM
+        default "gpt-audio-mini"
+        help
+            An audio-input-capable model, such as gpt-audio-mini or
+            gpt-audio-1.5. The recorded voice note is sent to it and its text
+            answer is shown.
+
+    config MUSE_ROUTELLM_MAX_SECONDS
+        int "Longest voice note to record (seconds)"
+        depends on MUSE_CHAT_ROUTELLM
+        range 3 20
+        default 12
+        help
+            Caps how much 16 kHz mono audio one push-to-talk turn records and
+            uploads. Each second is about 32 KB of PSRAM before base64.
+
+    config MUSE_ROUTELLM_KEY
+        string "RouteLLM API key baked into the firmware (optional)"
+        depends on MUSE_CHAT_ROUTELLM
+        default ""
+        help
+            Optional ChatLLM/RouteLLM API key compiled into the firmware so the
+            gadget works on first boot without the serial command. A key set
+            over serial (">chatllm_key=...", stored in NVS) takes precedence.
+            Leaving this empty keeps the secret out of the firmware image;
+            prefer that and set the key over serial.
+
     config MUSE_HATCH
         bool "Muse's own voice session"
-        depends on MUSE_ENABLED
+        depends on MUSE_ENABLED && !MUSE_CHAT_ROUTELLM
         default y if SPIRAM
         default n
         help

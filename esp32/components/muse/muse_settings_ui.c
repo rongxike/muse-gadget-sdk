@@ -24,6 +24,8 @@
 #include "esp_mac.h"
 #include "esp_timer.h"
 
+#include "sdkconfig.h"
+
 #include "muse_audio.h"
 #include "muse_battery.h"
 #include "muse_ble.h"
@@ -831,7 +833,12 @@ static void on_hatch_vm_done(const char *text) { muse_settings_set_hatch_vm(text
 static void on_hatch_token_done(const char *text)
 {
     if (text[0]) {
+#if CONFIG_MUSE_CHAT_ROUTELLM
+        muse_settings_set_routellm_key(text);
+        muse_hatch_config_changed();
+#else
         muse_settings_set_hatch_token(text, false);
+#endif
     }
 }
 
@@ -869,7 +876,12 @@ static void on_hatch_vm(lv_event_t *e)
 static void on_hatch_token(lv_event_t *e)
 {
     (void)e;
+#if CONFIG_MUSE_CHAT_ROUTELLM
+    open_text("ChatLLM key", "", true, MUSE_ROUTELLM_KEY_MAX, "Your s2_... key; replaces the current one",
+             on_hatch_token_done, s_hatch);
+#else
     open_text("Device token", "", true, MUSE_TOKEN_MAX, "Empty keeps the current one", on_hatch_token_done, s_hatch);
+#endif
 }
 
 static void on_hatch_test(lv_event_t *e)
@@ -902,7 +914,11 @@ static void build_hatch_page(lv_obj_t *tile)
     s_hatch_status = note(list, "");
     row(list, NULL, "Server", &s_hatch_host, on_hatch_host, NULL);
     row(list, NULL, "VM ID", &s_hatch_vm, on_hatch_vm, NULL);
+#if CONFIG_MUSE_CHAT_ROUTELLM
+    row(list, NULL, "ChatLLM key", &s_hatch_token, on_hatch_token, NULL);
+#else
     row(list, NULL, "Device token", &s_hatch_token, on_hatch_token, NULL);
+#endif
     row(list, NULL, "SDK token", &s_hatch_sdk_token, on_hatch_sdk_token, NULL);
     button(list, "Test connection", COLOR_ACCENT, on_hatch_test, NULL);
     note(list, "Pair with the Muse app to use your account; a device token here overrides it, and a long one is "
@@ -942,10 +958,25 @@ static void tick_hatch(void)
     set_text(s_hatch_host, host);
     /* One set here, else the one it connected to. */
     set_text(s_hatch_vm, vm[0] ? vm : h.vm_id[0] ? h.vm_id : "Not set");
+#if CONFIG_MUSE_CHAT_ROUTELLM
+    {
+        /* Show the stored ChatLLM key's start so it can be confirmed. */
+        char rk[MUSE_ROUTELLM_KEY_MAX + 1];
+        muse_settings_routellm_key(rk);
+        if (rk[0]) {
+            char kh[20];
+            snprintf(kh, sizeof(kh), "%.12s...", rk);
+            set_text(s_hatch_token, kh);
+        } else {
+            set_text(s_hatch_token, "Not set");
+        }
+    }
+#else
     /* The device token is a credential, so none of it shows. Pairing stores one
      * (muse_link_hatch_linked); one typed in here overrides it. */
     set_text(s_hatch_token, muse_settings_hatch_token_len() ? "Set here" :
                             muse_link_hatch_linked() ? "Set" : "Not set");
+#endif
     /* The hint gadgets.muse.ai shows. */
     const char *sdk = muse_link_sdk_token();
     if (sdk) {

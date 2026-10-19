@@ -44,6 +44,7 @@ static struct {
     char host[MUSE_HOST_MAX + 1];
     char vm[MUSE_VM_MAX + 1];
     char token[MUSE_TOKEN_MAX + 1];
+    char routellm_key[MUSE_ROUTELLM_KEY_MAX + 1];
 } s = {
     .volume = CONFIG_MUSE_DEFAULT_VOLUME,
     .speaker_on = true,
@@ -132,6 +133,7 @@ esp_err_t muse_settings_init(void)
     load_str("host", s.host, sizeof(s.host));
     load_str("vm", s.vm, sizeof(s.vm));
     load_str("token", s.token, sizeof(s.token));
+    load_str("cllm_key", s.routellm_key, sizeof(s.routellm_key));
 
     s.volume = clampi(s.volume, 0, 100);
     s.mic_gain = clampi(s.mic_gain, 0, MUSE_MIC_GAIN_MAX);
@@ -188,6 +190,18 @@ size_t muse_settings_hatch_token_len(void)
 {
     size_t n;
     LOCKED(n = strlen(s.token));
+    return n;
+}
+
+void muse_settings_routellm_key(char out[MUSE_ROUTELLM_KEY_MAX + 1])
+{
+    LOCKED(strlcpy(out, s.routellm_key, MUSE_ROUTELLM_KEY_MAX + 1));
+}
+
+size_t muse_settings_routellm_key_len(void)
+{
+    size_t n;
+    LOCKED(n = strlen(s.routellm_key));
     return n;
 }
 
@@ -294,4 +308,13 @@ esp_err_t muse_settings_set_hatch_token(const char *token, bool append)
         notify(MUSE_SETTING_HATCH);
     }
     return err;
+}
+
+void muse_settings_set_routellm_key(const char *key)
+{
+    LOCKED({
+        strlcpy(s.routellm_key, key ? key : "", sizeof(s.routellm_key));
+        save_str("cllm_key", s.routellm_key);
+    });
+    notify(MUSE_SETTING_HATCH);
 }

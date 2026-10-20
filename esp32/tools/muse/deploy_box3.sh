@@ -53,6 +53,8 @@ if [ -n "$TOKEN" ]; then
     echo "error: --token must match firmware format (mgst_ + 43 base64url chars)" >&2
     exit 2
   }
+  # Token payload is base64url of 32 bytes (see main/identity.c), so only these
+  # final characters are valid in the last position.
   [[ "AEIMQUYcgkosw048" == *"${TOKEN:47:1}"* ]] || {
     echo "error: --token has invalid base64url tail bits" >&2
     exit 2
@@ -91,6 +93,7 @@ try:
 except ImportError as exc:
     raise SystemExit(f"error: pyserial is required to send token ({exc})")
 
+acked = False
 with serial.Serial(port, 115200, timeout=1) as ser:
     time.sleep(1.5)
     ser.reset_input_buffer()
@@ -98,7 +101,6 @@ with serial.Serial(port, 115200, timeout=1) as ser:
     ser.flush()
 
     deadline = time.time() + 12
-    acked = False
     while time.time() < deadline:
         line = ser.readline().decode("utf-8", errors="ignore").strip()
         if not line:

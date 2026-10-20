@@ -49,6 +49,15 @@ On Linux/macOS, after activating ESP-IDF v6.0.1:
 tools/muse/board.sh build box3
 ```
 
+For a single command build+flash flow, run:
+
+```sh
+tools/muse/deploy_box3.sh --port /dev/ttyACM0 --token mgst_...
+```
+
+Use `--flash-only` to skip rebuilding when you already have a fresh
+`build-muse-espressif-box-3/`.
+
 The helper uses the same build directory. Builds for different boards share
 `managed_components/` and `dependencies.lock`; do not run them concurrently.
 

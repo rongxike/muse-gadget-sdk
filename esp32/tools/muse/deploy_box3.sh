@@ -63,6 +63,11 @@ else
 fi
 
 if [ -n "$TOKEN" ]; then
+  [[ "$TOKEN" =~ ^mgst_[A-Za-z0-9]+$ ]] || {
+    echo "error: --token must match mgst_[A-Za-z0-9]+" >&2
+    exit 2
+  }
+
   command -v python3 >/dev/null 2>&1 || { echo "error: python3 not found" >&2; exit 1; }
 
   RESOLVED_PORT="$(python3 "$ROOT/tools/muse/ports.py" box3 "${PORT_SELECTOR:-}")"
@@ -87,16 +92,19 @@ with serial.Serial(port, 115200, timeout=1) as ser:
     ser.flush()
 
     deadline = time.time() + 12
+    acked = False
     while time.time() < deadline:
         line = ser.readline().decode("utf-8", errors="ignore").strip()
         if not line:
             continue
         print(line)
         if line.startswith("@sdk_token ok"):
-            raise SystemExit(0)
+            acked = True
+            break
         if line.startswith("@sdk_token error"):
             raise SystemExit("error: device rejected SDK token")
 
+if not acked:
     raise SystemExit("error: no SDK token acknowledgement from device")
 PY
 fi

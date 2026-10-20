@@ -37,6 +37,7 @@ static struct {
     uint8_t mic_gain;
     uint8_t brightness;
     uint16_t sleep_s;
+    uint8_t record_time_s;
     bool wifi_on;
     bool ble_on;
     char ssid[MUSE_SSID_MAX + 1];
@@ -51,6 +52,7 @@ static struct {
     .mic_gain = 30,
     .brightness = 100,
     .sleep_s = 120,
+    .record_time_s = MUSE_RECORD_TIME_MAX,
     .wifi_on = true,
     .host = DEFAULT_HOST,
 };
@@ -122,6 +124,7 @@ esp_err_t muse_settings_init(void)
     load_u8("mic_gain", &s.mic_gain);
     load_u8("bright", &s.brightness);
     nvs_get_u16(s_nvs, "sleep_s", &s.sleep_s);
+    load_u8("record_time_s", &s.record_time_s);
     if (nvs_get_u8(s_nvs, "wifi_on", &b) == ESP_OK) {
         s.wifi_on = b;
     }
@@ -138,9 +141,10 @@ esp_err_t muse_settings_init(void)
     s.volume = clampi(s.volume, 0, 100);
     s.mic_gain = clampi(s.mic_gain, 0, MUSE_MIC_GAIN_MAX);
     s.brightness = clampi(s.brightness, 10, 100);
-    ESP_LOGI(TAG, "vol %d%s, mic %d dB, bright %d, sleep %ds, wifi %s (%s), ble %s, muse %s",
-             s.volume, s.speaker_on ? "" : " (speaker off)", s.mic_gain, s.brightness, s.sleep_s, s.wifi_on ? "on" : "off",
-             "network saved by Link", s.ble_on ? "on" : "off", s.token[0] ? "token set" : "no token");
+    s.record_time_s = clampi(s.record_time_s, MUSE_RECORD_TIME_MIN, MUSE_RECORD_TIME_MAX);
+    ESP_LOGI(TAG, "vol %d%s, mic %d dB, bright %d, sleep %ds, record %ds, wifi %s (%s), ble %s, muse %s",
+             s.volume, s.speaker_on ? "" : " (speaker off)", s.mic_gain, s.brightness, s.sleep_s, s.record_time_s,
+             s.wifi_on ? "on" : "off", "network saved by Link", s.ble_on ? "on" : "off", s.token[0] ? "token set" : "no token");
     return ESP_OK;
 }
 
@@ -154,6 +158,7 @@ bool muse_settings_speaker_on(void) { return s.speaker_on; }
 int muse_settings_mic_gain(void) { return s.mic_gain; }
 int muse_settings_brightness(void) { return s.brightness; }
 int muse_settings_sleep_s(void) { return s.sleep_s; }
+int muse_settings_record_time_s(void) { return s.record_time_s; }
 bool muse_settings_wifi_on(void) { return s.wifi_on; }
 bool muse_settings_ble_on(void) { return s.ble_on; }
 
@@ -239,6 +244,13 @@ void muse_settings_set_sleep_s(int secs)
     nvs_set_u16(s_nvs, "sleep_s", s.sleep_s);
     nvs_commit(s_nvs);
     notify(MUSE_SETTING_SLEEP);
+}
+
+void muse_settings_set_record_time_s(int secs)
+{
+    s.record_time_s = clampi(secs, MUSE_RECORD_TIME_MIN, MUSE_RECORD_TIME_MAX);
+    save_u8("record_time_s", s.record_time_s);
+    notify(MUSE_SETTING_RECORD_TIME);
 }
 
 void muse_settings_set_wifi_on(bool on)

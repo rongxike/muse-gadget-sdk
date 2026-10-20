@@ -36,6 +36,7 @@
 #include "muse_board.h"
 #include "muse_input.h"
 #include "muse_chat.h"
+#include "muse_clock_ui.h"
 #include "muse_console.h"
 #include "muse_link.h"
 #include "muse_mem.h"
@@ -110,7 +111,8 @@ bool muse_ui_face_active(void)
     return s_face_active;
 }
 static lv_obj_t *s_settings;
-static lv_obj_t *s_dots[2];
+static lv_obj_t *s_clock_tile; /* the neon clock page, one swipe right of Muse */
+static lv_obj_t *s_dots[3];
 static lv_obj_t *s_wifi_icon;
 static lv_obj_t *s_ble_icon;
 static lv_obj_t *s_cover;
@@ -922,12 +924,19 @@ static void build_screen(void)
     lv_obj_t *face = scr;
     if (muse_board->touch)
     {
-        /* Swipe left from Muse for settings. */
+        /* Three tiles side by side: the clock one swipe to the right of Muse
+         * (swipe left->right to reveal it), settings one swipe to the left. */
         s_tv = lv_tileview_create(scr);
         lv_obj_set_style_bg_color(s_tv, lv_color_black(), 0);
         lv_obj_set_style_bg_opa(s_tv, LV_OPA_COVER, 0);
         lv_obj_set_scrollbar_mode(s_tv, LV_SCROLLBAR_MODE_OFF);
-        s_face = lv_tileview_add_tile(s_tv, 0, 0, LV_DIR_RIGHT);
+        /* Column 0: the clock. It allows a swipe back to the right (to Muse). */
+        s_clock_tile = lv_tileview_add_tile(s_tv, 0, 0, LV_DIR_RIGHT);
+        lv_obj_set_scrollbar_mode(s_clock_tile, LV_SCROLLBAR_MODE_OFF);
+        lv_obj_set_style_bg_color(s_clock_tile, lv_color_black(), 0);
+        lv_obj_set_style_bg_opa(s_clock_tile, LV_OPA_COVER, 0);
+        /* Column 1: Muse. Swipe right->left for settings, left->right for clock. */
+        s_face = lv_tileview_add_tile(s_tv, 1, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
         /* It never scrolls, but LVGL would size its scrollbars from all its
          * children every time it draws any part of it. */
         lv_obj_set_scrollbar_mode(s_face, LV_SCROLLBAR_MODE_OFF);
@@ -935,7 +944,8 @@ static void build_screen(void)
          * shows as a different-coloured square around the character. */
         lv_obj_set_style_bg_color(s_face, lv_color_black(), 0);
         lv_obj_set_style_bg_opa(s_face, LV_OPA_COVER, 0);
-        s_settings = lv_tileview_add_tile(s_tv, 1, 0, LV_DIR_LEFT);
+        /* Column 2: settings. Swipe back right->... left (toward Muse). */
+        s_settings = lv_tileview_add_tile(s_tv, 2, 0, LV_DIR_LEFT);
         lv_obj_add_event_cb(s_tv, tile_changed_cb, LV_EVENT_VALUE_CHANGED, NULL);
         face = s_face;
     }
@@ -1153,6 +1163,7 @@ void muse_ui_stop(void)
         lv_obj_del(s_settings);
         s_settings = NULL;
     }
+    s_clock_tile = NULL; /* child of s_tv, freed with it (its DELETE cb runs) */
     if (s_tv) {
         lv_obj_del(s_tv);
         s_tv = NULL;
@@ -1272,8 +1283,8 @@ static void build_overlays(void)
 {
     lv_obj_t *scr = lv_screen_active();
 
-    /* Page dots. */
-    for (int i = 0; i < 2 && s_tv; i++)
+    /* Page dots: clock, Muse, settings. */
+    for (int i = 0; i < 3 && s_tv; i++)
     {
         lv_obj_t *d = lv_obj_create(scr);
         lv_obj_remove_style_all(d);
@@ -1282,7 +1293,7 @@ static void build_overlays(void)
         lv_obj_set_style_bg_opa(d, LV_OPA_COVER, 0);
         lv_obj_set_style_bg_color(d, lv_color_hex(COLOR_DOT_OFF), 0);
         lv_obj_remove_flag(d, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_align(d, LV_ALIGN_BOTTOM_MID, i ? 8 : -8, -14);
+        lv_obj_align(d, LV_ALIGN_BOTTOM_MID, (i - 1) * 16, -14);
         s_dots[i] = d;
     }
 
@@ -1454,9 +1465,10 @@ static void update_chrome(float now)
 
     if (s_tv)
     {
-        int page = lv_tileview_get_tile_active(s_tv) == s_settings;
+        lv_obj_t *active = lv_tileview_get_tile_active(s_tv);
+        int page = active == s_clock_tile ? 0 : active == s_settings ? 2 : 1;
         bool subpage = muse_settings_ui_in_subpage();
-        bool swipe = !page || !subpage;
+        bool swipe = page != 2 || !subpage;
         if (swipe != lv_obj_has_flag(s_tv, LV_OBJ_FLAG_SCROLLABLE))
         {
             lv_obj_set_flag(s_tv, LV_OBJ_FLAG_SCROLLABLE, swipe);
@@ -1464,14 +1476,20 @@ static void update_chrome(float now)
         int shown = page * 2 + subpage;
         if (shown != s_shown_page)
         {
-            for (int i = 0; i < 2; i++)
+            for (int i = 0; i < 3; i++)
             {
                 lv_obj_set_style_bg_color(s_dots[i], lv_color_hex(i == page ? COLOR_ACCENT : COLOR_DOT_OFF), 0);
-                lv_obj_set_flag(s_dots[i], LV_OBJ_FLAG_HIDDEN, page && subpage);
+                lv_obj_set_flag(s_dots[i], LV_OBJ_FLAG_HIDDEN, page == 2 && subpage);
             }
             s_shown_page = shown;
         }
-        muse_settings_ui_tick(lv_obj_get_scroll_x(s_tv) > 0);
+        /* Drive each page's tick with whether it is (even partly) on screen, so
+         * timers run only while a page is visible. Muse rests scrolled to the
+         * middle tile; left of that is the clock, right of it is settings. */
+        int32_t sx = lv_obj_get_scroll_x(s_tv);
+        int32_t face_x = lv_obj_get_x(s_face);
+        muse_settings_ui_tick(sx > face_x);
+        muse_clock_ui_tick(sx < face_x);
     }
 
     /* Joining, the icon blinks: the compact layout has no state label. */
@@ -1903,10 +1921,10 @@ static void frame_tick(lv_timer_t *timer)
     {
         return; /* the image covers the face */
     }
-    if (s_tv && lv_obj_get_scroll_x(s_tv) != 0)
+    if (s_tv && lv_obj_get_scroll_x(s_tv) != lv_obj_get_x(s_face))
     {
-        /* Off screen, or sliding to or from settings: hold still so the
-         * slide gets the whole frame time. */
+        /* Off screen, or sliding to or from the clock or settings: hold still
+         * so the slide gets the whole frame time. */
         return;
     }
 
@@ -1983,6 +2001,14 @@ esp_err_t muse_ui_start(void)
     else
     {
         muse_menu_build(lv_screen_active(), s_w, s_h);
+    }
+    if (s_clock_tile)
+    {
+        muse_clock_ui_build(s_clock_tile);
+        /* Muse is the middle tile now; rest on it without animating past the
+         * clock at boot. */
+        lv_obj_update_layout(s_tv);
+        lv_tileview_set_tile(s_tv, s_face, LV_ANIM_OFF);
     }
     build_overlays();
     s_frame_timer = lv_timer_create(frame_tick, muse_board->frame_ms, NULL);

@@ -49,8 +49,12 @@ while [ $# -gt 0 ]; do
 done
 
 if [ -n "$TOKEN" ]; then
-  [[ "$TOKEN" =~ ^mgst_[A-Za-z0-9]+$ ]] || {
-    echo "error: --token must match mgst_[A-Za-z0-9]+" >&2
+  [[ "$TOKEN" =~ ^mgst_[A-Za-z0-9_-]{43}$ ]] || {
+    echo "error: --token must match firmware format (mgst_ + 43 base64url chars)" >&2
+    exit 2
+  }
+  [[ "AEIMQUYcgkosw048" == *"${TOKEN:47:1}"* ]] || {
+    echo "error: --token has invalid base64url tail bits" >&2
     exit 2
   }
 fi

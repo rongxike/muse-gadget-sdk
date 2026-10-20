@@ -48,6 +48,13 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+if [ -n "$TOKEN" ]; then
+  [[ "$TOKEN" =~ ^mgst_[A-Za-z0-9]+$ ]] || {
+    echo "error: --token must match mgst_[A-Za-z0-9]+" >&2
+    exit 2
+  }
+fi
+
 cd "$ROOT"
 
 if [ "$FLASH_ONLY" -eq 0 ]; then
@@ -63,11 +70,6 @@ else
 fi
 
 if [ -n "$TOKEN" ]; then
-  [[ "$TOKEN" =~ ^mgst_[A-Za-z0-9]+$ ]] || {
-    echo "error: --token must match mgst_[A-Za-z0-9]+" >&2
-    exit 2
-  }
-
   command -v python3 >/dev/null 2>&1 || { echo "error: python3 not found" >&2; exit 1; }
 
   RESOLVED_PORT="$(python3 "$ROOT/tools/muse/ports.py" box3 "${PORT_SELECTOR:-}")"
@@ -82,7 +84,7 @@ port, token = sys.argv[1], sys.argv[2]
 
 try:
     import serial  # type: ignore
-except Exception as exc:
+except ImportError as exc:
     raise SystemExit(f"error: pyserial is required to send token ({exc})")
 
 with serial.Serial(port, 115200, timeout=1) as ser:

@@ -867,6 +867,7 @@ static void voice_task(void *arg)
         }
         muse_wifi_power(MUSE_WIFI_FULL);
         if (!can_record()) {
+            muse_input_touch_talk_reset();
             pending_down = false;
             continue;
         }
@@ -877,16 +878,19 @@ static void voice_task(void *arg)
         if (held < MIN_HELD_FRAMES && !wake) {
             muse_hatch_turn_cancel();
             drop_rec();
+            muse_input_touch_talk_reset();
             pre_reset();
             go_idle("HOLD LONGER TO TALK");
             continue;
         }
         if (!ok) {
+            muse_input_touch_talk_reset();
             pre_reset();
             go_idle(why);   /* Hatch failed it while recording */
             continue;
         }
         pending_down = finish_note();
+        muse_input_touch_talk_reset();
         pre_reset();
         if (!pending_down && muse_state_mode(NULL) != MUSE_MODE_IDLE) {
             muse_state_make_happy();

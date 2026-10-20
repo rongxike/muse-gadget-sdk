@@ -65,6 +65,11 @@ void muse_input_touch_talk(bool pressed)
     atomic_fetch_or(&s_touch_talk_events, toggle ? MUSE_BTN_TALK_PRESS : MUSE_BTN_TALK_RELEASE);
 }
 
+void muse_input_touch_talk_reset(void)
+{
+    s_touch_talk_down = false;
+}
+
 static const char *TAG = "muse_input";
 
 #define POLL_MS 10

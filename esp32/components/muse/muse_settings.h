@@ -61,7 +61,7 @@ bool muse_settings_speaker_on(void);    /* off: replies are shown, not played */
 int muse_settings_mic_gain(void);       /* dB, 0..MUSE_MIC_GAIN_MAX */
 int muse_settings_brightness(void);     /* 10..100 */
 int muse_settings_sleep_s(void);        /* 0 = never */
-int muse_settings_record_time_s(void);   /* 5..20 seconds */
+int muse_settings_record_time_s(void);   /* 1..20 seconds */
 bool muse_settings_wifi_on(void);
 bool muse_settings_ble_on(void);
 

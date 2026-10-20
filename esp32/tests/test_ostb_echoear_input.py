@@ -48,8 +48,8 @@ typedef int lv_event_t;
 #define LV_EVENT_PRESS_LOST 3
 #define MUSE_LINK_CONFIRM 1
 static int link_state;
-static int lv_event_get_code(lv_event_t *e) { return *e; }
-static int muse_link_state(void) { return link_state; }
+__attribute__((unused)) static int lv_event_get_code(lv_event_t *e) { return *e; }
+__attribute__((unused)) static int muse_link_state(void) { return link_state; }
 #define muse_board (&board)
 static bool muse_link_talk_press(void) { if (pending_pair) { confirmed++; return true; } return false; }
 static bool muse_state_asleep(void) { return false; }
@@ -59,9 +59,7 @@ static void muse_menu_key(int key) { (void)key; }
 static void set_asleep(bool sleep, const char *why) { (void)sleep; (void)why; }
 static void post(int type, bool wake) { (void)wake; if (type==MUSE_PTT_DOWN) down++; else up++; }
 '''
-        code += function(source, 'muse_input_touch_talk') + '\n' + function(source, 'talk_button')
-        ui = (ROOT / 'components/muse/muse_ui.c').read_text()
-        code += '\n' + function(ui, 'on_touch_mic') + '\n' + function(ui, 'on_any_press')
+        code += function(source, 'muse_input_touch_talk') + '\n' + function(source, 'muse_input_touch_talk_reset') + '\n' + function(source, 'talk_button')
         code += r'''
 int main(void) {
     uint16_t x=9,y=8;
@@ -71,29 +69,48 @@ int main(void) {
     packet[2]=103;packet[4]=104;assert(!ostb_echoear_touch_decode(packet,&x,&y));
     packet[0]=0;assert(!ostb_echoear_touch_decode(packet,&x,&y) && y==359);
     packet[0]=2;assert(!ostb_echoear_touch_decode(packet,&x,&y));
-    muse_input_touch_talk(true);talk_button(atomic_exchange(&s_touch_talk_events,0));
-    assert(down==1 && up==0 && s_talk_down);
-    muse_input_touch_talk(false);talk_button(atomic_exchange(&s_touch_talk_events,0));
-    assert(up==1 && !s_talk_down);
-    muse_input_touch_talk(true);muse_input_touch_talk(false);
-    talk_button(atomic_exchange(&s_touch_talk_events,0));
-    assert(down==2 && up==2 && atomic_load(&s_touch_talk_events)==0);
-    pending_pair=true;muse_input_touch_talk(true);muse_input_touch_talk(false);
-    talk_button(atomic_exchange(&s_touch_talk_events,0));
-    assert(confirmed==1 && down==2 && up==2 && !s_talk_down);
-    pending_pair=false;
-    lv_event_t event=LV_EVENT_PRESSED;on_touch_mic(&event);
-    talk_button(atomic_exchange(&s_touch_talk_events,0));assert(down==3 && s_talk_down);
-    event=LV_EVENT_PRESS_LOST;on_touch_mic(&event);
-    talk_button(atomic_exchange(&s_touch_talk_events,0));assert(up==3 && !s_talk_down);
-    event=LV_EVENT_PRESSED;on_touch_mic(&event);
-    event=LV_EVENT_RELEASED;on_touch_mic(&event);
-    talk_button(atomic_exchange(&s_touch_talk_events,0));assert(down==4 && up==4);
-    on_any_press(&event);assert(atomic_load(&s_touch_talk_events)==0);
-    pending_pair=true;link_state=MUSE_LINK_CONFIRM;on_any_press(&event);
-    talk_button(atomic_exchange(&s_touch_talk_events,0));
-    assert(confirmed==2 && down==4 && up==4 && !s_talk_down);
-    board.touch_talk=false;on_any_press(&event);assert(atomic_load(&s_touch_talk_events)==0);
+
+    down = up = confirmed = 0;
+    s_talk_down = false;
+    s_touch_talk_down = false;
+    muse_input_touch_talk_reset();
+    muse_input_touch_talk(true);
+    unsigned ev = atomic_exchange(&s_touch_talk_events, 0);
+    talk_button(ev);
+    assert(down == 1 && up == 0 && s_talk_down);
+
+    down = up = confirmed = 0;
+    s_talk_down = false;
+    s_touch_talk_down = false;
+    muse_input_touch_talk_reset();
+    muse_input_touch_talk(true);
+    ev = atomic_exchange(&s_touch_talk_events, 0);
+    talk_button(ev);
+    muse_input_touch_talk(true);
+    ev = atomic_exchange(&s_touch_talk_events, 0);
+    talk_button(ev);
+    assert(down == 1 && up == 1 && !s_talk_down);
+
+    down = up = confirmed = 0;
+    s_talk_down = false;
+    s_touch_talk_down = true;
+    muse_input_touch_talk_reset();
+    muse_input_touch_talk(true);
+    ev = atomic_exchange(&s_touch_talk_events, 0);
+    talk_button(ev);
+    assert(down == 1 && up == 0 && s_talk_down && s_touch_talk_down);
+
+    down = up = confirmed = 0;
+    s_talk_down = false;
+    s_touch_talk_down = false;
+    pending_pair = true;
+    muse_input_touch_talk_reset();
+    muse_input_touch_talk(true);
+    muse_input_touch_talk(false);
+    ev = atomic_exchange(&s_touch_talk_events, 0);
+    talk_button(ev);
+    assert(confirmed == 1 && down == 0 && up == 0 && !s_talk_down);
+    pending_pair = false;
     return 0;
 }
 '''

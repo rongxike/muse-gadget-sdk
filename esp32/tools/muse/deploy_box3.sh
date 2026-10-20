@@ -53,9 +53,10 @@ if [ -n "$TOKEN" ]; then
     echo "error: --token must match firmware format (mgst_ + 43 base64url chars)" >&2
     exit 2
   }
+  TOKEN_LAST_INDEX=47 # "mgst_" (5 chars) + 43 payload chars - 1
   # Token payload is base64url of 32 bytes (see main/identity.c), so only these
   # final characters are valid in the last position.
-  [[ "AEIMQUYcgkosw048" == *"${TOKEN:47:1}"* ]] || {
+  [[ "AEIMQUYcgkosw048" == *"${TOKEN:$TOKEN_LAST_INDEX:1}"* ]] || {
     echo "error: --token has invalid base64url tail bits" >&2
     exit 2
   }
@@ -93,14 +94,16 @@ try:
 except ImportError as exc:
     raise SystemExit(f"error: pyserial is required to send token ({exc})")
 
+UART_BAUD = 115200  # Must match the board console baud in firmware.
+ACK_TIMEOUT_S = 12
 acked = False
-with serial.Serial(port, 115200, timeout=1) as ser:
+with serial.Serial(port, UART_BAUD, timeout=1) as ser:
     time.sleep(1.5)
     ser.reset_input_buffer()
     ser.write(f">sdk_token={token}\n".encode("utf-8"))
     ser.flush()
 
-    deadline = time.time() + 12
+    deadline = time.time() + ACK_TIMEOUT_S
     while time.time() < deadline:
         line = ser.readline().decode("utf-8", errors="ignore").strip()
         if not line:

@@ -560,6 +560,9 @@ static void hold_rec(bool tried)
 
 static void drop_oldest(void)
 {
+    if (!s_held_count) {
+        return;
+    }
     free(s_held[0].pcm);
     s_held_count--;
     memmove(s_held, s_held + 1, s_held_count * sizeof(s_held[0]));
@@ -904,6 +907,10 @@ esp_err_t muse_voice_start(QueueHandle_t queue)
     s_queue = queue;
     s_pre = heap_caps_malloc(PRE_CHUNKS * sizeof(pre_chunk_t), MUSE_BIG_CAPS);
     if (!s_pre || muse_audio_init(muse_settings_volume(), muse_settings_mic_gain()) != ESP_OK) {
+        if (s_pre) {
+            free(s_pre);
+            s_pre = NULL;
+        }
         muse_state_set_mode(MUSE_MODE_ERROR);
         muse_state_set_caption("AUDIO INIT FAILED");
         return ESP_FAIL;
@@ -913,6 +920,8 @@ esp_err_t muse_voice_start(QueueHandle_t queue)
                                         MUSE_BIG_CAPS) != pdPASS) {
         /* Without the task nothing would ever rest the codecs, which
          * muse_audio_init() left open: on the Watcher that's ~33 mA. */
+        free(s_pre);
+        s_pre = NULL;
         muse_audio_power(false);
         muse_state_set_mode(MUSE_MODE_ERROR);
         muse_state_set_caption("AUDIO INIT FAILED");

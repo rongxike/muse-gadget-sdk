@@ -53,21 +53,22 @@
 #endif
 
 static atomic_uint s_touch_talk_events;
-static bool s_touch_talk_down;
+static atomic_bool s_touch_talk_down;
 
 void muse_input_touch_talk(bool pressed)
 {
     if (!pressed) {
         return;
     }
-    bool toggle = !s_touch_talk_down;
-    s_touch_talk_down = toggle;
+    bool toggle = !atomic_load(&s_touch_talk_down);
+    atomic_store(&s_touch_talk_down, toggle);
     atomic_fetch_or(&s_touch_talk_events, toggle ? MUSE_BTN_TALK_PRESS : MUSE_BTN_TALK_RELEASE);
 }
 
 void muse_input_touch_talk_reset(void)
 {
-    s_touch_talk_down = false;
+    atomic_store(&s_touch_talk_down, false);
+    atomic_store(&s_touch_talk_events, 0);
 }
 
 static const char *TAG = "muse_input";

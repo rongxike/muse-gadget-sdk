@@ -98,7 +98,7 @@ static int64_t s_sdk_token_bad_us;   /* when an invalid SDK token was entered */
 static lv_obj_t *s_ble_sw, *s_ble_status;
 
 /* Sound page. */
-static lv_obj_t *s_spk_sw, *s_vol_val, *s_vol_sl, *s_gain_val, *s_gain_sl, *s_bright_val, *s_bright_sl, *s_mic_bar, *s_mic_val;
+static lv_obj_t *s_spk_sw, *s_vol_val, *s_vol_sl, *s_gain_val, *s_gain_sl, *s_record_time_val, *s_record_time_sl, *s_bright_val, *s_bright_sl, *s_mic_bar, *s_mic_val;
 
 /* Sleep page. */
 static const int SLEEP_CHOICES[] = { 0, 30, 60, 120, 300, 600 };
@@ -1076,6 +1076,15 @@ static void on_gain(lv_event_t *e)
     }
 }
 
+static void on_record_time(lv_event_t *e)
+{
+    int secs = lv_slider_get_value(s_record_time_sl);
+    set_val(s_record_time_val, "%d s", secs);
+    if (lv_event_get_code(e) == LV_EVENT_RELEASED) {
+        muse_settings_set_record_time_s(secs);
+    }
+}
+
 static void on_bright(lv_event_t *e)
 {
     int v = lv_slider_get_value(s_bright_sl);
@@ -1094,6 +1103,7 @@ static void build_sound_page(lv_obj_t *tile)
     s_spk_sw = switch_row(list, "Speaker", muse_settings_speaker_on(), on_speaker_sw);
     s_vol_sl = slider(list, "Volume", 0, 100, muse_settings_volume(), &s_vol_val, on_volume);
     s_gain_sl = slider(list, "Mic gain", 0, MUSE_MIC_GAIN_MAX / 3, muse_settings_mic_gain() / 3, &s_gain_val, on_gain);
+    s_record_time_sl = slider(list, "Record time", MUSE_RECORD_TIME_MIN, MUSE_RECORD_TIME_MAX, muse_settings_record_time_s(), &s_record_time_val, on_record_time);
 
     lv_obj_t *meter = lv_obj_create(list);
     lv_obj_remove_style_all(meter);
@@ -1115,6 +1125,7 @@ static void build_sound_page(lv_obj_t *tile)
 
     set_val(s_vol_val, "%d%%", muse_settings_volume());
     set_val(s_gain_val, "%d dB", muse_settings_mic_gain() / 3 * 3);
+    set_val(s_record_time_val, "%d s", muse_settings_record_time_s());
     set_val(s_bright_val, "%d%%", muse_settings_brightness());
 }
 

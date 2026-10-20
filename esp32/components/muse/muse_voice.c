@@ -344,7 +344,8 @@ static bool record(bool barge_in, size_t *held, char *why, size_t cap)
         if (!released && got_event(MUSE_PTT_UP))
         {
             released = true;
-            stop_at = n + TAIL_FRAMES < MAX_FRAMES ? n + TAIL_FRAMES : MAX_FRAMES;
+            size_t tail_limit = n + TAIL_FRAMES < max_frames ? n + TAIL_FRAMES : max_frames;
+            stop_at = tail_limit < MAX_FRAMES ? tail_limit : MAX_FRAMES;
         }
     }
     muse_state_set_level(0);
@@ -1007,8 +1008,8 @@ static void voice_task(void *arg)
             continue; /* a tap: it only woke Muse */
         }
         muse_wifi_power(MUSE_WIFI_FULL);
-        if (!can_record())
-        {
+        if (!can_record()) {
+            muse_input_touch_talk_reset();
             pending_down = false;
             continue;
         }
@@ -1020,17 +1021,19 @@ static void voice_task(void *arg)
         {
             muse_hatch_turn_cancel();
             drop_rec();
+            muse_input_touch_talk_reset();
             pre_reset();
             go_idle("HOLD LONGER TO TALK");
             continue;
         }
-        if (!ok)
-        {
+        if (!ok) {
+            muse_input_touch_talk_reset();
             pre_reset();
             go_idle(why); /* Hatch failed it while recording */
             continue;
         }
         pending_down = finish_note();
+        muse_input_touch_talk_reset();
         pre_reset();
         if (!pending_down && muse_state_mode(NULL) != MUSE_MODE_IDLE)
         {
@@ -1044,16 +1047,11 @@ esp_err_t muse_voice_start(QueueHandle_t queue)
 {
     s_queue = queue;
     s_pre = heap_caps_malloc(PRE_CHUNKS * sizeof(pre_chunk_t), MUSE_BIG_CAPS);
-    if (!s_pre)
-    {
-        muse_state_set_mode(MUSE_MODE_ERROR);
-        muse_state_set_caption("AUDIO INIT FAILED");
-        return ESP_ERR_NO_MEM;
-    }
-    if (muse_audio_init(muse_settings_volume(), muse_settings_mic_gain()) != ESP_OK)
-    {
-        heap_caps_free(s_pre);
-        s_pre = NULL;
+    if (!s_pre || muse_audio_init(muse_settings_volume(), muse_settings_mic_gain()) != ESP_OK) {
+        if (s_pre) {
+            free(s_pre);
+            s_pre = NULL;
+        }
         muse_state_set_mode(MUSE_MODE_ERROR);
         muse_state_set_caption("AUDIO INIT FAILED");
         return ESP_FAIL;
@@ -1064,7 +1062,7 @@ esp_err_t muse_voice_start(QueueHandle_t queue)
     {
         /* Without the task nothing would ever rest the codecs, which
          * muse_audio_init() left open: on the Watcher that's ~33 mA. */
-        heap_caps_free(s_pre);
+        free(s_pre);
         s_pre = NULL;
         muse_audio_power(false);
         muse_state_set_mode(MUSE_MODE_ERROR);

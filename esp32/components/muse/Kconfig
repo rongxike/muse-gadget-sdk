@@ -281,7 +281,7 @@ menu "Muse"
     config MUSE_ROUTELLM_MAX_SECONDS
         int "Longest voice note to record (seconds)"
         depends on MUSE_CHAT_ROUTELLM
-        range 3 20
+        range 3 15
         default 12
         help
             Caps how much 16 kHz mono audio one push-to-talk turn records and

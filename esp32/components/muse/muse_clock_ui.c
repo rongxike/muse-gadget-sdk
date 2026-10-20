@@ -367,11 +367,11 @@ static void fly_timer_cb(lv_timer_t *timer)
         lv_opa_t opa = (lv_opa_t)(60 + tw * 150);
 
         lv_obj_t *dot = f->dot;
-        /* Position relative to the tile's content origin (f->x/y are in the
-         * same screen-centred space the artwork uses). */
-        lv_area_t tc;
-        lv_obj_get_content_coords(s_tile, &tc);
-        lv_obj_set_pos(dot, (int)f->x - tc.x1 - 2, (int)f->y - tc.y1 - 2);
+        /* f->x/y are in the tile's own coordinate space (the same space the
+         * hands and markers are laid out in, centred on s_cx/s_cy), so a child
+         * position is just that minus half the dot size. The dot is a child of
+         * the tile and therefore slides with it automatically. */
+        lv_obj_set_pos(dot, (int)f->x - 2, (int)f->y - 2);
         lv_obj_set_style_bg_opa(dot, opa, 0);
         lv_obj_set_style_shadow_opa(dot, (lv_opa_t)(tw * 120), 0);
     }

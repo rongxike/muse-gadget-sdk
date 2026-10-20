@@ -1473,6 +1473,8 @@ static void update_chrome(float now)
         {
             lv_obj_set_flag(s_tv, LV_OBJ_FLAG_SCROLLABLE, swipe);
         }
+        /* Unique id of the currently shown view (page 0..2, plus the settings
+         * sub-page flag) so the dots are only restyled when it actually changes. */
         int shown = page * 2 + subpage;
         if (shown != s_shown_page)
         {

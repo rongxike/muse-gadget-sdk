@@ -168,6 +168,7 @@ static float s_next_power_update;
 static float s_next_settings_tick;
 static bool s_dark;
 static int s_brightness = -1; /* last applied */
+static lv_timer_t *s_frame_timer;
 static int s_preview_brightness = -1;
 static int s_shown_page = -1;
 static int s_shown_speaker = -1;
@@ -1770,7 +1771,6 @@ static void update_status(muse_mode_t mode, float now)
 }
 
 static volatile bool s_snapshot;
-static lv_timer_t *s_frame_timer;
 #if LV_USE_SNAPSHOT
 static volatile int s_bench_page = -1;
 void muse_ui_bench_page(bool settings)

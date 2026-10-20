@@ -32,9 +32,9 @@ We open sourced the SDKs and firmware here. It's built by hackers, for hackers,
 just for fun. Side effects of tinkering may include bricked boards, voided
 warranties, brownouts, or bankruptcies. Proceed at your own risk!
 
-| | |
-|---|---|
-| [**ESP32 Device SDK**](esp32) | Connect your ESP32 board to Muse through our open source SDK. Throw in a screen to show images, add audio in and out, or wire up other sensors. |
+|                               |                                                                                                                                                          |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [**ESP32 Device SDK**](esp32) | Connect your ESP32 board to Muse through our open source SDK. Throw in a screen to show images, add audio in and out, or wire up other sensors.          |
 | [**Linux Device SDK**](linux) | Turn that spare Raspberry Pi or Linux box into a Muse gadget. Hack in your own commands to let Muse handle sysadmin chores or your Home Assistant setup. |
 
 Before you flash or pair a gadget, get an
@@ -55,6 +55,66 @@ USB-free sweep. The isolated diagnostic does not pair or need an SDK token;
 fixture safety and explicit hardware authorization still come first, as the
 [PPK2 rules](esp32/docs/power/ppk2.md) describe.
 
+## ChatLLM On ESP32 (RouteLLM)
+
+The ESP32 firmware includes a ChatLLM backend mode (`CONFIG_MUSE_CHAT_ROUTELLM`)
+so push-to-talk can go directly to RouteLLM / ChatLLM instead of Muse's default
+backend.
+
+### Quick Build + Flash (Windows)
+
+Use the helper script:
+
+```powershell
+.\scripts\deploy-routellm.ps1
+```
+
+Optional flags:
+
+```powershell
+# Force a serial port
+.\scripts\deploy-routellm.ps1 -Port COM5
+
+# Build only (skip flashing)
+.\scripts\deploy-routellm.ps1 -BuildOnly
+
+# Regenerate build sdkconfig before build
+.\scripts\deploy-routellm.ps1 -Reconfigure
+```
+
+The script builds `esp32/build-muse-routellm` with:
+
+- `sdkconfig.defaults`
+- `devices/sdkconfig.muse`
+- `devices/sdkconfig.muse-waveshare-s3-175c`
+- `sdkconfig.routellm`
+
+### ChatLLM Key Setup
+
+You can keep local developer values in `.env` (see `.env.sample`):
+
+- `chatllm_token=...`
+- `api_source=chatllm`
+
+To set the key on a device, use serial console command:
+
+```text
+>chatllm_key=YOUR_CHATLLM_KEY
+```
+
+The key is stored on-device in NVS. After setting it, run:
+
+```text
+>chatllm_test
+```
+
+to verify the device can reach ChatLLM with the configured key.
+
+Notes:
+
+- Keep secrets out of committed files.
+- A key set over serial takes precedence over a build-time fallback key.
+
 ## Community
 
 Meet other hackers who are building and customizing Muse gadgets in our
@@ -67,11 +127,11 @@ Muse Gadgets is licensed under the Apache License, Version 2.0, found in
 [`LICENSE`](LICENSE), except for these third-party files, which keep their
 upstream licenses:
 
-| Path | Upstream | License |
-|---|---|---|
-| [`esp32/components/minimp3/include/minimp3.h`](esp32/components/minimp3) | [lieff/minimp3](https://github.com/lieff/minimp3) | CC0-1.0, see [`LICENSE`](esp32/components/minimp3/LICENSE) |
-| [`esp32/components/muse/boards/ostb_echoear_display_init.h`](esp32/components/muse/boards/ostb_echoear_display_init.h) | [78/xiaozhi-esp32 ESP-VoCat panel sequence](https://github.com/78/xiaozhi-esp32/blob/0d576d3d4c049c6f55eaf879725dc23e516511b4/main/boards/espressif/esp-vocat/esp_vocat.cc) | MIT, retained in the file header |
-| [`esp32/main/pixel_font.c`](esp32/main/pixel_font.c) | Adafruit GFX `glcdfont.c` | BSD-2-Clause, in the file header |
+| Path                                                                                                                   | Upstream                                                                                                                                                                    | License                                                    |
+| ---------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| [`esp32/components/minimp3/include/minimp3.h`](esp32/components/minimp3)                                               | [lieff/minimp3](https://github.com/lieff/minimp3)                                                                                                                           | CC0-1.0, see [`LICENSE`](esp32/components/minimp3/LICENSE) |
+| [`esp32/components/muse/boards/ostb_echoear_display_init.h`](esp32/components/muse/boards/ostb_echoear_display_init.h) | [78/xiaozhi-esp32 ESP-VoCat panel sequence](https://github.com/78/xiaozhi-esp32/blob/0d576d3d4c049c6f55eaf879725dc23e516511b4/main/boards/espressif/esp-vocat/esp_vocat.cc) | MIT, retained in the file header                           |
+| [`esp32/main/pixel_font.c`](esp32/main/pixel_font.c)                                                                   | Adafruit GFX `glcdfont.c`                                                                                                                                                   | BSD-2-Clause, in the file header                           |
 
 Dependencies fetched at build time are under their own licenses: ESP-IDF
 components (into `esp32/managed_components/`), and the simulator's LVGL and

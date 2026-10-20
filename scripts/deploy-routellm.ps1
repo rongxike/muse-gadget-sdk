@@ -35,15 +35,15 @@ function Assert-PathExists {
 }
 
 function Get-Esp32ComPort {
-    $ports = Get-CimInstance Win32_PnPEntity |
-    Where-Object { $_.PNPDeviceID -match "VID_303A&PID_1001" } |
-    ForEach-Object {
-        if ($_.Name -match "\((COM\d+)\)") {
-            $Matches[1]
-        }
-    } |
-    Where-Object { $_ } |
-    Sort-Object -Unique
+    $ports = @(Get-CimInstance Win32_PnPEntity |
+        Where-Object { $_.PNPDeviceID -match "VID_303A&PID_1001" } |
+        ForEach-Object {
+            if ($_.Name -match "\((COM\d+)\)") {
+                $Matches[1]
+            }
+        } |
+        Where-Object { $_ } |
+        Sort-Object -Unique)
 
     if (-not $ports) {
         return $null
@@ -70,7 +70,28 @@ Write-Host "Project: $esp32Dir"
 Push-Location $esp32Dir
 try {
     $env:PATH = "$idfPyEnvScripts;$env:PATH"
-    . $exportPs1 2>$null
+
+    # ESP-IDF's export.ps1 can emit native stderr/status text that PowerShell
+    # may surface as NativeCommandError when ErrorActionPreference is Stop.
+    # Run export in a tolerant block, then restore the caller's preference.
+    $oldEap = $ErrorActionPreference
+    $oldNativePref = $null
+    $hasNativePref = $false
+    try {
+        $ErrorActionPreference = "Continue"
+        if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -Scope Global -ErrorAction SilentlyContinue) {
+            $hasNativePref = $true
+            $oldNativePref = $Global:PSNativeCommandUseErrorActionPreference
+            $Global:PSNativeCommandUseErrorActionPreference = $false
+        }
+        . $exportPs1 2>$null
+    }
+    finally {
+        $ErrorActionPreference = $oldEap
+        if ($hasNativePref) {
+            $Global:PSNativeCommandUseErrorActionPreference = $oldNativePref
+        }
+    }
 
     if ($Reconfigure) {
         Remove-Item -Force "build-muse-routellm\sdkconfig" -ErrorAction SilentlyContinue

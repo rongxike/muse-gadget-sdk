@@ -344,7 +344,7 @@ static bool record(bool barge_in, size_t *held, char *why, size_t cap)
         if (!released && got_event(MUSE_PTT_UP))
         {
             released = true;
-            size_t tail_limit = n + TAIL_FRAMES < max_frames ? n + TAIL_FRAMES : max_frames;
+            size_t tail_limit = n + TAIL_FRAMES < MAX_FRAMES ? n + TAIL_FRAMES : MAX_FRAMES;
             stop_at = tail_limit < MAX_FRAMES ? tail_limit : MAX_FRAMES;
         }
     }

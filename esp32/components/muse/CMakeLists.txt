@@ -38,6 +38,7 @@ if(CONFIG_MUSE_ENABLED)
         "muse_adpcm.c"
         "muse_settings.c"
         "muse_settings_ui.c"
+        "muse_clock_ui.c"
         "muse_text.c"
         "muse_keypad.c"
         "muse_lv_mem.c"

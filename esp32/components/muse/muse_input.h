@@ -68,6 +68,7 @@ void muse_input_set_console_hook(bool (*hook)(const char *line));
 
 /* LVGL microphone press/release edges; handled by the existing input task. */
 void muse_input_touch_talk(bool pressed);
+bool muse_input_touch_talk_active(void);
 void muse_input_touch_talk_reset(void);
 
 /* Plays the goodbye animation and powers off (from the input task). */

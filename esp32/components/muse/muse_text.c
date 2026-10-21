@@ -201,6 +201,15 @@ int muse_text_ascii(const char *s, size_t *len, char out[4])
         out[1] = '\0';
         return 1;
     }
+#if CONFIG_MUSE_CJK_FONT
+    bool cjk = (cp >= 0x2E80 && cp <= 0x9FFF)
+               || (cp >= 0xAC00 && cp <= 0xD7AF)
+               || (cp >= 0xF900 && cp <= 0xFAFF)
+               || (cp >= 0xFF00 && cp <= 0xFFEF);
+    if (cjk) {
+        return -1;
+    }
+#endif
     const char *a = stand_in(cp);
     if (!a) {
         return -1;

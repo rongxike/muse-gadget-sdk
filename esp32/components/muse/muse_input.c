@@ -57,12 +57,13 @@ static atomic_bool s_touch_talk_down;
 
 void muse_input_touch_talk(bool pressed)
 {
-    if (!pressed) {
-        return;
-    }
-    bool toggle = !atomic_load(&s_touch_talk_down);
-    atomic_store(&s_touch_talk_down, toggle);
-    atomic_fetch_or(&s_touch_talk_events, toggle ? MUSE_BTN_TALK_PRESS : MUSE_BTN_TALK_RELEASE);
+    atomic_store(&s_touch_talk_down, pressed);
+    atomic_fetch_or(&s_touch_talk_events, pressed ? MUSE_BTN_TALK_PRESS : MUSE_BTN_TALK_RELEASE);
+}
+
+bool muse_input_touch_talk_active(void)
+{
+    return atomic_load(&s_touch_talk_down);
 }
 
 void muse_input_touch_talk_reset(void)
@@ -272,16 +273,17 @@ static void aux_key(bool pressed, bool edge)
     }
 }
 
-/* Talk button: push-to-talk, or Select while the menu is open. Asleep, the
- * press wakes and is posted as a waking one: muse_voice records only if it's
- * still held once awake. */
+/* Talk button: tap to start talking, tap again to stop. In menus it stays
+ * Select, and while asleep a tap wakes then starts as a waking press. */
 static void talk_button(unsigned ev)
 {
     bool talk_down = s_talk_down;
     static bool swallow;
 #if CONFIG_MUSE_WATCHER_CAMERA
     static TickType_t last_release;
-    if ((ev & MUSE_BTN_TALK_PRESS) && !muse_state_asleep() && !muse_menu_is_open() && last_release && xTaskGetTickCount() - last_release <= pdMS_TO_TICKS(350))
+    if ((ev & MUSE_BTN_TALK_PRESS) && !talk_down && !swallow &&
+        !muse_state_asleep() && !muse_menu_is_open() && last_release &&
+        xTaskGetTickCount() - last_release <= pdMS_TO_TICKS(350))
     {
         ESP_LOGI(TAG, "wheel double-click: camera preview/shutter");
         last_release = 0;
@@ -291,23 +293,22 @@ static void talk_button(unsigned ev)
     }
 #endif
 
-    /* A quick tap can latch press and release in the same poll, and a release
-     * can land just before the next press; keep them ordered. */
-    bool released = ev & MUSE_BTN_TALK_RELEASE;
-#if CONFIG_MUSE_WATCHER_CAMERA
-    bool saw_release = released;
-#endif
-    if ((talk_down || swallow) && released)
+    if (ev & MUSE_BTN_TALK_PRESS)
     {
         if (talk_down)
         {
             post(MUSE_PTT_UP, false);
+            talk_down = false;
+            swallow = false;
+            s_talk_down = false;
+            return;
         }
-        talk_down = swallow = false;
-        released = false;
-    }
-    if (!talk_down && !swallow && (ev & MUSE_BTN_TALK_PRESS))
-    {
+        if (swallow)
+        {
+            swallow = false;
+            s_talk_down = talk_down;
+            return;
+        }
         if (muse_link_talk_press())
         {
             /* Confirmed a Muse app pairing (Link's setup button). */
@@ -316,9 +317,9 @@ static void talk_button(unsigned ev)
         }
         else if (muse_state_asleep())
         {
+            /* Talk press while asleep is wake-only: start talking on the next press. */
             set_asleep(false, muse_board->talk_button);
-            post(MUSE_PTT_DOWN, true);
-            talk_down = true;
+            swallow = true;
         }
         else if (muse_menu_is_open())
         {
@@ -333,16 +334,17 @@ static void talk_button(unsigned ev)
             talk_down = true;
         }
     }
-    if ((talk_down || swallow) && released)
+
+    /* Toggle mode: release doesn't end a note; the next press does. */
+    if (ev & MUSE_BTN_TALK_RELEASE)
     {
-        if (talk_down)
+        if (swallow)
         {
-            post(MUSE_PTT_UP, false);
+            swallow = false;
         }
-        talk_down = swallow = false;
     }
 #if CONFIG_MUSE_WATCHER_CAMERA
-    if (saw_release && !swallow)
+    if ((ev & MUSE_BTN_TALK_RELEASE) && !swallow)
     {
         last_release = xTaskGetTickCount();
     }

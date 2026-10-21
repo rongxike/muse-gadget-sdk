@@ -64,6 +64,8 @@ static const char *TAG = "muse_ui";
 #define SPEAKER_PX 64
 #define SPEAKER_GROW_PX 8   /* how much the speaker button swells while held */
 #define SPEAKER_HOLD_MS 400 /* LVGL's long press */
+#define SCREEN_TALK_HOLD_MS 1500
+#define IDLE_ANIM_STOP_S 10.0f
 
 #define COLOR_DIM 0x8b84a8
 #define COLOR_CAPTION 0xd8d2ff
@@ -173,6 +175,7 @@ static int s_preview_brightness = -1;
 static int s_shown_page = -1;
 static int s_shown_speaker = -1;
 static muse_mode_t s_last_mode = MUSE_MODE_COUNT;
+static bool s_anim_stopped;
 
 /*
  * While Muse is thinking or speaking it shrinks to make room for the reply:
@@ -499,39 +502,61 @@ static void on_touch_mic(lv_event_t *e)
 /* Icons beside the physical buttons, in place of an instruction caption. */
 static void build_button_icons(lv_obj_t *face)
 {
-    if (muse_board->rim_controls)
-        return; /* dedicated rim hints below */
-    const muse_button_hint_t *t = &muse_board->talk_hint, *a = &muse_board->aux_hint;
-    s_mic_icon = make_mic(face, s_tall ? 24 : s_small ? 12
-                                                      : 26);
-    lv_obj_align(s_mic_icon, t->align, t->x, t->y);
-    set_mic_color(COLOR_DIM);
-    if (muse_board->touch_talk)
-    {
-        lv_obj_add_flag(s_mic_icon, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_set_ext_click_area(s_mic_icon, 12);
-        for (uint32_t i = 0; i < lv_obj_get_child_count(s_mic_icon); i++)
-        {
-            lv_obj_remove_flag(lv_obj_get_child(s_mic_icon, i), LV_OBJ_FLAG_CLICKABLE);
-        }
-        lv_obj_add_event_cb(s_mic_icon, on_touch_mic, LV_EVENT_ALL, NULL);
-    }
-
-    /* Without touch the aux button opens the menu rather than sleeping. A board
-     * that leaves aux_hint out has no button to put an icon beside. */
-    if (a->align == LV_ALIGN_DEFAULT)
-    {
-        return;
-    }
-    s_aux_icon = make_label(face, s_small ? &lv_font_montserrat_14 : &lv_font_montserrat_28, COLOR_DIM);
-    lv_label_set_text(s_aux_icon, muse_board->touch ? LV_SYMBOL_POWER : LV_SYMBOL_LIST);
-    lv_obj_align(s_aux_icon, a->align, a->x, a->y);
+    (void)face;
+    /* A clean face: no extra icon chrome on the screen. */
+    s_mic_icon = NULL;
+    s_aux_icon = NULL;
 }
 
-static void on_canvas_clicked(lv_event_t *e)
+static void on_canvas_talk(lv_event_t *e)
 {
-    (void)e;
-    muse_state_make_happy();
+    static bool hold_pending;
+    static bool hold_started;
+    static uint32_t hold_from_ms;
+
+    if (muse_board->touch_talk)
+    {
+        if (lv_event_get_code(e) == LV_EVENT_PRESSED)
+        {
+            muse_state_make_happy();
+        }
+        return;
+    }
+    switch (lv_event_get_code(e))
+    {
+    case LV_EVENT_PRESSED:
+        if (muse_input_touch_talk_active())
+        {
+            /* Already talking: a quick tap stops immediately. */
+            muse_input_touch_talk(true);
+            hold_pending = false;
+            hold_started = false;
+        }
+        else
+        {
+            /* Idle: require a deliberate hold before starting. */
+            hold_pending = true;
+            hold_started = false;
+            hold_from_ms = lv_tick_get();
+        }
+        break;
+    case LV_EVENT_PRESSING:
+        if (hold_pending && !hold_started &&
+            lv_tick_elaps(hold_from_ms) >= SCREEN_TALK_HOLD_MS)
+        {
+            muse_input_touch_talk(true);
+            muse_state_make_happy();
+            hold_started = true;
+        }
+        break;
+    case LV_EVENT_RELEASED:
+    case LV_EVENT_PRESS_LOST:
+        hold_pending = false;
+        hold_started = false;
+        break;
+    default:
+        break;
+    }
 }
 
 static const lv_font_t *font_pick(const lv_font_t *full, const lv_font_t *compact)
@@ -994,7 +1019,12 @@ static void build_screen(void)
     lv_obj_align(s_canvas, LV_ALIGN_CENTER, 0, s_big_y);
     s_muse_y = s_big_y;
     lv_obj_add_flag(s_canvas, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(s_canvas, on_canvas_clicked, LV_EVENT_CLICKED, NULL);
+    static const lv_event_code_t canvas_talk_events[] = {LV_EVENT_PRESSED, LV_EVENT_PRESSING,
+                                                         LV_EVENT_RELEASED, LV_EVENT_PRESS_LOST};
+    for (size_t i = 0; i < sizeof(canvas_talk_events) / sizeof(canvas_talk_events[0]); i++)
+    {
+        lv_obj_add_event_cb(s_canvas, on_canvas_talk, canvas_talk_events[i], NULL);
+    }
     if (s_ring)
     {
         /* The canvas's black corners reach the bezel; keep the ring on top. */
@@ -1002,7 +1032,7 @@ static void build_screen(void)
     }
     build_button_icons(face);
 
-    /* Status line: connectivity icons + power. */
+    /* Status line: keep it text-only for a cleaner face. */
     lv_obj_t *status = lv_obj_create(face);
     lv_obj_remove_style_all(status);
     lv_obj_remove_flag(status, LV_OBJ_FLAG_SCROLLABLE);
@@ -1012,8 +1042,8 @@ static void build_screen(void)
     lv_obj_set_style_pad_column(status, s_small ? 4 : 8, 0);
     lv_obj_align(status, LV_ALIGN_TOP_MID, 0, muse_board->rim_controls ? 40 : s_small ? 1
                                                                                       : 20 + s_dy);
-    s_wifi_icon = make_label(status, &lv_font_montserrat_14, COLOR_DIM);
-    s_ble_icon = make_label(status, &lv_font_montserrat_14, COLOR_DIM);
+    s_wifi_icon = NULL;
+    s_ble_icon = NULL;
     s_power_lbl = make_label(status, &lv_font_unscii_8, COLOR_DIM);
 
     /* The compact layout leaves the state to the avatar and the caption,
@@ -1140,28 +1170,34 @@ static void image_hide_locked(void)
 
 void muse_ui_stop(void)
 {
-    if (!s_ready) {
+    if (!s_ready)
+    {
         return;
     }
     muse_board->display_lock(-1);
-    if (s_frame_timer) {
+    if (s_frame_timer)
+    {
         lv_timer_del(s_frame_timer);
         s_frame_timer = NULL;
     }
     image_hide_locked();
-    if (s_settings) {
+    if (s_settings)
+    {
         lv_obj_del(s_settings);
         s_settings = NULL;
     }
-    if (s_tv) {
+    if (s_tv)
+    {
         lv_obj_del(s_tv);
         s_tv = NULL;
     }
-    if (s_cover) {
+    if (s_cover)
+    {
         lv_obj_del(s_cover);
         s_cover = NULL;
     }
-    if (s_image) {
+    if (s_image)
+    {
         lv_obj_del(s_image);
         s_image = NULL;
     }
@@ -1308,15 +1344,10 @@ static void build_overlays(void)
     lv_obj_add_event_cb(s_camera_hint, on_camera_hint_clicked, LV_EVENT_CLICKED, NULL);
 #endif
 
-    if (muse_board->rim_controls)
-    {
-        /* Dedicated ownership: legacy chrome/reply hides must never claim it. */
-        s_ptt_hint = make_mic(scr, 26);
-        lv_obj_align(s_ptt_hint, muse_board->talk_hint.align, muse_board->talk_hint.x, muse_board->talk_hint.y);
-        s_spk_hint = make_control_icon(scr, &muse_board->speaker_hint, LV_SYMBOL_VOLUME_MID, 0xffd060);
-        s_pwr_hint = make_control_icon(scr, &muse_board->power_hint, LV_SYMBOL_POWER, 0xff8080);
-        update_control_hints(MUSE_MODE_BOOT);
-    }
+    /* Keep the UI clean and icon-free. */
+    s_ptt_hint = NULL;
+    s_spk_hint = NULL;
+    s_pwr_hint = NULL;
 
     /* BLE pairing code, or the Muse app's ask for the talk button: a centred
      * column in one typeface, the code large. The small card grows with the hint. */
@@ -1477,20 +1508,26 @@ static void update_chrome(float now)
     /* Joining, the icon blinks: the compact layout has no state label. */
     muse_wifi_status_t w;
     muse_wifi_status(&w);
-    bool joining = w.state == MUSE_WIFI_CONNECTING || w.state == MUSE_WIFI_FAILED;
-    const char *wifi = w.state == MUSE_WIFI_CONNECTED || (joining && (int)(now * 2) % 2 == 0) ? LV_SYMBOL_WIFI : "";
-    if (strcmp(wifi, lv_label_get_text(s_wifi_icon)) != 0)
+    if (s_wifi_icon)
     {
-        lv_label_set_text(s_wifi_icon, wifi);
+        bool joining = w.state == MUSE_WIFI_CONNECTING || w.state == MUSE_WIFI_FAILED;
+        const char *wifi = w.state == MUSE_WIFI_CONNECTED || (joining && (int)(now * 2) % 2 == 0) ? LV_SYMBOL_WIFI : "";
+        if (strcmp(wifi, lv_label_get_text(s_wifi_icon)) != 0)
+        {
+            lv_label_set_text(s_wifi_icon, wifi);
+        }
     }
     s_idle_name = idle_name(w.state);
     muse_ble_status_t b;
     muse_ble_status(&b);
-    const char *ble = b.state != MUSE_BLE_OFF ? LV_SYMBOL_BLUETOOTH : "";
-    if (strcmp(ble, lv_label_get_text(s_ble_icon)) != 0)
+    if (s_ble_icon)
     {
-        lv_label_set_text(s_ble_icon, ble);
-        lv_obj_set_style_text_color(s_ble_icon, lv_color_hex(b.state == MUSE_BLE_CONNECTED ? COLOR_ACCENT : COLOR_DIM), 0);
+        const char *ble = b.state != MUSE_BLE_OFF ? LV_SYMBOL_BLUETOOTH : "";
+        if (strcmp(ble, lv_label_get_text(s_ble_icon)) != 0)
+        {
+            lv_label_set_text(s_ble_icon, ble);
+            lv_obj_set_style_text_color(s_ble_icon, lv_color_hex(b.state == MUSE_BLE_CONNECTED ? COLOR_ACCENT : COLOR_DIM), 0);
+        }
     }
 
     /* Paired, the name has done its job (picking this one out in the Muse
@@ -1910,19 +1947,29 @@ static void frame_tick(lv_timer_t *timer)
         return;
     }
 
-    /* Fast attack, slow release keeps the mouth and meter lively but readable. */
-    float level = muse_state_level();
-    s_level += (level - s_level) * (level > s_level ? 0.6f : 0.2f);
+    bool stop_anim = mode == MUSE_MODE_IDLE && muse_state_idle_secs() >= IDLE_ANIM_STOP_S;
+    if (!stop_anim)
+    {
+        /* Fast attack, slow release keeps the mouth and meter lively but readable. */
+        float level = muse_state_level();
+        s_level += (level - s_level) * (level > s_level ? 0.6f : 0.2f);
 
-    muse_pose_t pose = {
-        .mode = mode,
-        .t = now,
-        .mode_t = mode_t,
-        .level = s_level,
-        .happy = muse_state_happiness(),
-    };
-    muse_pixel_render(&pose);
-    invalidate_muse();
+        muse_pose_t pose = {
+            .mode = mode,
+            .t = now,
+            .mode_t = mode_t,
+            .level = s_level,
+            .happy = muse_state_happiness(),
+        };
+        muse_pixel_render(&pose);
+        invalidate_muse();
+        s_anim_stopped = false;
+    }
+    else if (!s_anim_stopped)
+    {
+        ESP_LOGI(TAG, "idle animation stopped after %.1f s", (double)IDLE_ANIM_STOP_S);
+        s_anim_stopped = true;
+    }
 
     update_status(mode, now);
 #if CONFIG_MUSE_CLOCK

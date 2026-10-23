@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="MuseCompanion.MainPage"
+             Title="Muse Companion">
+
+    <ScrollView>
+        <VerticalStackLayout Padding="20" Spacing="16">
+
+            <Label Text="Muse Bluetooth Handshake"
+                   FontSize="22"
+                   FontAttributes="Bold"
+                   HorizontalOptions="Center" />
+
+            <Frame Padding="12" BorderColor="#512BD4">
+                <VerticalStackLayout Spacing="4">
+                    <Label Text="Status" FontAttributes="Bold" />
+                    <Label x:Name="StatusLabel" Text="Disconnected" />
+                    <Label x:Name="HandshakeLabel" Text="Handshake: not started" />
+                </VerticalStackLayout>
+            </Frame>
+
+            <Button x:Name="ScanButton"
+                    Text="Scan &amp; Connect"
+                    Clicked="OnScanClicked" />
+
+            <Button x:Name="DisconnectButton"
+                    Text="Disconnect"
+                    IsEnabled="False"
+                    Clicked="OnDisconnectClicked" />
+
+            <Label Text="Log" FontAttributes="Bold" />
+            <Frame Padding="8" BorderColor="#AAAAAA">
+                <Label x:Name="LogLabel"
+                       FontSize="13"
+                       LineBreakMode="WordWrap"
+                       Text="" />
+            </Frame>
+
+        </VerticalStackLayout>
+    </ScrollView>
+
+</ContentPage>

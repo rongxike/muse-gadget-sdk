@@ -1,0 +1,60 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<!--
+		  First build targets Android only. iOS/MacCatalyst/Windows support can be
+		  added later by appending the relevant TFMs and adding a Platforms/iOS
+		  folder. The TFM is overridable so the same project can be built with a
+		  newer SDK, e.g. `dotnet build -p:MuseTargetFrameworks=net10.0-android`.
+		-->
+		<TargetFrameworks>$(MuseTargetFrameworks)</TargetFrameworks>
+		<TargetFrameworks Condition="'$(MuseTargetFrameworks)' == ''">net8.0-android</TargetFrameworks>
+		<OutputType>Exe</OutputType>
+		<RootNamespace>MuseCompanion</RootNamespace>
+		<UseMaui>true</UseMaui>
+		<SingleProject>true</SingleProject>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<Nullable>enable</Nullable>
+		<!-- Allow building the LTS TFM with newer SDKs without the EOL error. -->
+		<CheckEolTargetFramework>false</CheckEolTargetFramework>
+		<CheckEolWorkloads>false</CheckEolWorkloads>
+
+		<!-- Display name -->
+		<ApplicationTitle>Muse Companion</ApplicationTitle>
+
+		<!-- App Identifier -->
+		<ApplicationId>ai.muse.companion</ApplicationId>
+
+		<!-- Versions -->
+		<ApplicationDisplayVersion>1.0</ApplicationDisplayVersion>
+		<ApplicationVersion>1</ApplicationVersion>
+
+		<SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">21.0</SupportedOSPlatformVersion>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<!-- App Icon -->
+		<MauiIcon Include="Resources\AppIcon\appicon.svg" ForegroundFile="Resources\AppIcon\appiconfg.svg" Color="#512BD4" />
+
+		<!-- Splash Screen -->
+		<MauiSplashScreen Include="Resources\Splash\splash.svg" Color="#512BD4" BaseSize="128,128" />
+
+		<!-- Images -->
+		<MauiImage Include="Resources\Images\*" />
+
+		<!-- Custom Fonts -->
+		<MauiFont Include="Resources\Fonts\*" />
+
+		<!-- Raw Assets (also remove the "Resources\Raw" prefix) -->
+		<MauiAsset Include="Resources\Raw\**" LogicalName="%(RecursiveDir)%(Filename)%(Extension)" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<!-- $(MauiVersion) is supplied by the installed MAUI workload, so this
+		     resolves to the correct version for whichever TFM is built. -->
+		<PackageReference Include="Microsoft.Maui.Controls" Version="$(MauiVersion)" />
+		<PackageReference Include="Microsoft.Extensions.Logging.Debug" Version="8.0.1" />
+		<PackageReference Include="Plugin.BLE" Version="3.1.0" />
+	</ItemGroup>
+
+</Project>

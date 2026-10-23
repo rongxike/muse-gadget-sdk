@@ -26,7 +26,10 @@
 #include "muse_clock_ui.h"
 
 #include <math.h>
+#include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 
 #ifndef M_PI
@@ -44,11 +47,11 @@
 #define CLOCK_TZ "CST-8"
 #endif
 
-/* Small, measured-up-from pool. Raise only if the device's heap and frame
- * budget allow; each firefly is one lightweight LVGL object. */
-#define FIREFLY_COUNT 16
-#define FIREFLY_PERIOD_MS 60 /* calm drift, ~16 fps for the particle layer */
-#define HAND_PERIOD_MS 1000  /* the hands only need a per-second refresh */
+#define HAND_PERIOD_MS 200 /* smooth hour/minute updates while swiping */
+#define DATE_BUF_LEN 32
+#define SECOND_HEAD_LEN 24
+#define SECOND_HEAD_WIDTH 4
+#define SECOND_HEAD_PAD 22
 
 /* Neon palette (RGB888), blended around the bezel and reused by the specks. */
 #define COL_CYAN 0x3FE0FF
@@ -61,19 +64,11 @@
 #define COL_HAND_CORE 0xFFC8E6 /* pale-pink core */
 #define COL_MARKER 0x46E8FF    /* cyan cardinal markers */
 
-typedef struct
-{
-    float x, y;       /* position, preserved between frames */
-    float vx, vy;     /* slow velocity */
-    float dir;        /* heading, wanders gently */
-    float phase;      /* twinkle phase */
-    float speed;      /* magnitude of drift */
-    uint32_t color;   /* gold / cyan / blue / pink */
-    lv_obj_t *dot;    /* its LVGL object */
-} firefly_t;
-
 static lv_obj_t *s_tile;
-static lv_obj_t *s_bg;      /* draws the static artwork */
+static lv_obj_t *s_bg;       /* static artwork overlay */
+static lv_obj_t *s_bg_img;   /* sky background image */
+static lv_obj_t *s_sec_head; /* moving second "head" bar on the rim */
+static lv_obj_t *s_date_lbl;
 static lv_obj_t *s_pivot;   /* centre cap, above the hands */
 static lv_obj_t *s_hour[3]; /* [0] soft halo, [1] halo, [2] pale core */
 static lv_obj_t *s_min[3];
@@ -82,11 +77,9 @@ static lv_obj_t *s_markers[4]; /* cyan capsule markers at 12/3/6/9 */
 static lv_point_precise_t s_hour_pts[2];
 static lv_point_precise_t s_min_pts[2];
 static lv_point_precise_t s_marker_pts[4][2];
-
-static firefly_t s_flies[FIREFLY_COUNT];
+static lv_point_precise_t s_sec_pts[2];
 
 static lv_timer_t *s_hand_timer;
-static lv_timer_t *s_fly_timer;
 static bool s_running;
 
 /* Fixed tile-relative geometry, computed once at build from the display size.
@@ -119,13 +112,13 @@ static uint32_t lerp_rgb(uint32_t a, uint32_t b, float t)
 static uint32_t bezel_color(float deg)
 {
     static const uint32_t key[8] = {
-        COL_CYAN,    /*   0 - 3 o'clock */
-        COL_BLUE,    /*  45 */
-        COL_MAGENTA, /*  90 - 6 o'clock */
-        COL_ORANGE,  /* 135 */
-        COL_GOLD,    /* 180 - 9 o'clock */
-        COL_GOLD,    /* 225 */
-        0xFFB13D,    /* 270 - 12 o'clock, gold-orange */
+        COL_CYAN,     /*   0 - 3 o'clock */
+        COL_BLUE,     /*  45 */
+        COL_MAGENTA,  /*  90 - 6 o'clock */
+        COL_ORANGE,   /* 135 */
+        COL_GOLD,     /* 180 - 9 o'clock */
+        COL_GOLD,     /* 225 */
+        0xFFB13D,     /* 270 - 12 o'clock, gold-orange */
         COL_PALE_CYAN /* 315 */
     };
     while (deg < 0)
@@ -171,9 +164,8 @@ static void draw_speck(lv_layer_t *layer, int x, int y, int r, uint32_t color, l
 }
 
 /* The layered glowing bezel, tick marks and sparse specks. Drawn into whatever
- * region LVGL asks to redraw, so a moving hand only repaints its own slice.
- * The centre is taken from the widget's live position so the artwork tracks the
- * tile as it slides; the fixed geometry in s_cx/s_cy/s_radius is left alone. */
+ * region LVGL asks to redraw. The centre is taken from the widget's live
+ * position so the artwork tracks the tile as it slides. */
 static void on_bg_draw(lv_event_t *e)
 {
     lv_layer_t *layer = lv_event_get_layer(e);
@@ -191,9 +183,9 @@ static void on_bg_draw(lv_event_t *e)
         int radius, width;
         lv_opa_t opa;
     } rings[3] = {
-        {R, 9, LV_OPA_40},     /* soft outer halo */
+        {R, 9, LV_OPA_40},        /* soft outer halo */
         {R - 4, 3, LV_OPA_COVER}, /* bright edge */
-        {R - 13, 2, LV_OPA_70}, /* inner outline */
+        {R - 13, 2, LV_OPA_70},   /* inner outline */
     };
     for (int r = 0; r < 3; r++)
     {
@@ -236,10 +228,18 @@ static void on_bg_draw(lv_event_t *e)
         int da, dr, r;
         uint32_t color;
     } specks[12] = {
-        {20, 70, 2, COL_GOLD},   {75, 120, 1, COL_CYAN},  {130, 60, 2, COL_MAGENTA},
-        {160, 150, 1, COL_GOLD}, {205, 90, 1, COL_CYAN},  {250, 130, 2, COL_BLUE},
-        {290, 55, 1, COL_GOLD},  {315, 110, 2, COL_CYAN}, {40, 150, 1, COL_PALE_CYAN},
-        {100, 160, 1, COL_BLUE}, {225, 160, 2, COL_GOLD}, {340, 140, 1, COL_MAGENTA},
+        {20, 70, 2, COL_GOLD},
+        {75, 120, 1, COL_CYAN},
+        {130, 60, 2, COL_MAGENTA},
+        {160, 150, 1, COL_GOLD},
+        {205, 90, 1, COL_CYAN},
+        {250, 130, 2, COL_BLUE},
+        {290, 55, 1, COL_GOLD},
+        {315, 110, 2, COL_CYAN},
+        {40, 150, 1, COL_PALE_CYAN},
+        {100, 160, 1, COL_BLUE},
+        {225, 160, 2, COL_GOLD},
+        {340, 140, 1, COL_MAGENTA},
     };
     for (int i = 0; i < 12; i++)
     {
@@ -247,6 +247,44 @@ static void on_bg_draw(lv_event_t *e)
         int x = cx + (int)(cosf(a) * specks[i].dr);
         int y = cy + (int)(sinf(a) * specks[i].dr);
         draw_speck(layer, x, y, specks[i].r, specks[i].color, LV_OPA_80);
+    }
+}
+
+/* ---- assets ------------------------------------------------------------ */
+
+static void setup_background_image(int w, int h)
+{
+    static const char *const candidates[] = {
+        "A:/clock_sky.png",
+        "S:/clock_sky.png",
+        "/muse/clock_sky.png",
+        "clock_sky.png",
+    };
+
+    s_bg_img = lv_image_create(s_tile);
+    lv_obj_remove_style_all(s_bg_img);
+    lv_obj_set_size(s_bg_img, w, h);
+    lv_obj_set_pos(s_bg_img, 0, 0);
+    lv_obj_remove_flag(s_bg_img, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+
+    bool loaded = false;
+    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++)
+    {
+        FILE *f = fopen(candidates[i], "rb");
+        if (!f)
+        {
+            continue;
+        }
+        fclose(f);
+        lv_image_set_src(s_bg_img, candidates[i]);
+        loaded = true;
+        break;
+    }
+
+    if (!loaded)
+    {
+        lv_obj_set_style_bg_color(s_bg_img, lv_color_hex(0x0A1630), 0);
+        lv_obj_set_style_bg_opa(s_bg_img, LV_OPA_COVER, 0);
     }
 }
 
@@ -272,19 +310,21 @@ static void update_hands(void)
     localtime_r(&t, &tmv);
     bool synced = (tmv.tm_year + 1900) >= 2021;
 
-    float hour_deg, min_deg;
+    float hour_deg, min_deg, sec_deg;
     if (synced)
     {
         float mins = tmv.tm_min + tmv.tm_sec / 60.0f;
         float hours = (tmv.tm_hour % 12) + mins / 60.0f;
         hour_deg = hours * 30.0f;
         min_deg = mins * 6.0f;
+        sec_deg = tmv.tm_sec * 6.0f;
     }
     else
     {
-        /* Time not set: park the hands straight up rather than invent one. */
+        /* Time not set: park indicators straight up rather than invent one. */
         hour_deg = 0;
         min_deg = 0;
+        sec_deg = 0;
     }
 
     int hlen = (int)(s_radius * 0.52f);
@@ -296,6 +336,35 @@ static void update_hands(void)
         set_hand(s_min[i], s_min_pts, min_deg, mlen, tail);
     }
 
+    float a = (sec_deg - 90.0f) * (float)M_PI / 180.0f;
+    float ca = cosf(a), sa = sinf(a);
+    int r2 = s_radius - SECOND_HEAD_PAD;
+    int r1 = r2 - SECOND_HEAD_LEN;
+    s_sec_pts[0].x = s_cx + ca * r1;
+    s_sec_pts[0].y = s_cy + sa * r1;
+    s_sec_pts[1].x = s_cx + ca * r2;
+    s_sec_pts[1].y = s_cy + sa * r2;
+    lv_line_set_points(s_sec_head, s_sec_pts, 2);
+
+    char date_buf[DATE_BUF_LEN];
+    if (synced)
+    {
+        strftime(date_buf, sizeof(date_buf), "%d-%b-%Y", &tmv);
+    }
+    else
+    {
+        strlcpy(date_buf, "-- --- ----", sizeof(date_buf));
+    }
+
+    char rainbow[96];
+    snprintf(rainbow, sizeof(rainbow),
+             "#ff3b30%.2s##ff9500-##ffcc00%.3s##34c759-##0a84ff%.4s#",
+             date_buf, date_buf + 3, date_buf + 7);
+    if (strcmp(rainbow, lv_label_get_text(s_date_lbl)) != 0)
+    {
+        lv_label_set_text(s_date_lbl, rainbow);
+    }
+
     /* Dim the unsynced placeholder so it clearly reads as "not set yet". */
     lv_opa_t soft = synced ? LV_OPA_30 : LV_OPA_10;
     lv_opa_t halo = synced ? LV_OPA_COVER : LV_OPA_40;
@@ -305,76 +374,13 @@ static void update_hands(void)
     lv_obj_set_style_line_opa(s_min[1], halo, 0);
     lv_obj_set_style_line_opa(s_hour[2], halo, 0);
     lv_obj_set_style_line_opa(s_min[2], halo, 0);
+    lv_obj_set_style_line_opa(s_sec_head, synced ? LV_OPA_COVER : LV_OPA_40, 0);
 }
 
 static void hand_timer_cb(lv_timer_t *timer)
 {
     (void)timer;
     update_hands();
-}
-
-/* ---- fireflies --------------------------------------------------------- */
-
-static float frand(void)
-{
-    return (float)rand() / (float)RAND_MAX;
-}
-
-static void firefly_seed(firefly_t *f)
-{
-    float a = frand() * 2.0f * (float)M_PI;
-    float rr = frand() * (s_radius - 24);
-    f->x = s_cx + cosf(a) * rr;
-    f->y = s_cy + sinf(a) * rr;
-    f->dir = frand() * 2.0f * (float)M_PI;
-    f->speed = 3.0f + frand() * 5.0f; /* px/s, calm */
-    f->vx = cosf(f->dir) * f->speed;
-    f->vy = sinf(f->dir) * f->speed;
-    f->phase = frand() * 2.0f * (float)M_PI;
-    static const uint32_t pal[4] = {COL_GOLD, COL_CYAN, COL_BLUE, COL_MAGENTA};
-    f->color = pal[rand() & 3];
-}
-
-static void fly_timer_cb(lv_timer_t *timer)
-{
-    (void)timer;
-    float dt = FIREFLY_PERIOD_MS / 1000.0f;
-    for (int i = 0; i < FIREFLY_COUNT; i++)
-    {
-        firefly_t *f = &s_flies[i];
-        /* Gentle, smooth heading change: nudge the direction a little each
-         * frame rather than teleporting the particle. */
-        f->dir += (frand() - 0.5f) * 0.25f;
-        f->vx += (cosf(f->dir) * f->speed - f->vx) * 0.1f;
-        f->vy += (sinf(f->dir) * f->speed - f->vy) * 0.1f;
-        f->x += f->vx * dt;
-        f->y += f->vy * dt;
-
-        /* Keep them within the dial; reflect softly off the rim. */
-        float dx = f->x - s_cx, dy = f->y - s_cy;
-        float dist = sqrtf(dx * dx + dy * dy);
-        float lim = s_radius - 20;
-        if (dist > lim)
-        {
-            f->dir += (float)M_PI; /* turn back inward */
-            f->x = s_cx + dx / dist * lim;
-            f->y = s_cy + dy / dist * lim;
-        }
-
-        /* Slow twinkle. */
-        f->phase += 0.08f;
-        float tw = 0.5f + 0.5f * sinf(f->phase);
-        lv_opa_t opa = (lv_opa_t)(60 + tw * 150);
-
-        lv_obj_t *dot = f->dot;
-        /* f->x/y are in the tile's own coordinate space (the same space the
-         * hands and markers are laid out in, centred on s_cx/s_cy), so a child
-         * position is just that minus half the dot size. The dot is a child of
-         * the tile and therefore slides with it automatically. */
-        lv_obj_set_pos(dot, (int)f->x - 2, (int)f->y - 2);
-        lv_obj_set_style_bg_opa(dot, opa, 0);
-        lv_obj_set_style_shadow_opa(dot, (lv_opa_t)(tw * 120), 0);
-    }
 }
 
 /* ---- build / lifecycle ------------------------------------------------- */
@@ -398,19 +404,12 @@ static void on_tile_delete(lv_event_t *e)
         lv_timer_del(s_hand_timer);
         s_hand_timer = NULL;
     }
-    if (s_fly_timer)
-    {
-        lv_timer_del(s_fly_timer);
-        s_fly_timer = NULL;
-    }
     s_running = false;
-    s_tile = s_bg = s_pivot = NULL;
+    s_tile = s_bg = s_bg_img = s_sec_head = s_date_lbl = s_pivot = NULL;
     for (int i = 0; i < 3; i++)
         s_hour[i] = s_min[i] = NULL;
     for (int i = 0; i < 4; i++)
         s_markers[i] = NULL;
-    for (int i = 0; i < FIREFLY_COUNT; i++)
-        s_flies[i].dot = NULL;
 }
 
 void muse_clock_ui_build(lv_obj_t *tile)
@@ -429,7 +428,9 @@ void muse_clock_ui_build(lv_obj_t *tile)
     lv_obj_set_style_bg_color(tile, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(tile, LV_OPA_COVER, 0);
 
-    /* Back layer: the static artwork, drawn on demand. */
+    setup_background_image(w, h);
+
+    /* Overlay artwork layer (bezel, ticks and specks) above the sky image. */
     s_bg = lv_obj_create(tile);
     lv_obj_remove_style_all(s_bg);
     lv_obj_set_size(s_bg, w, h);
@@ -437,30 +438,10 @@ void muse_clock_ui_build(lv_obj_t *tile)
     lv_obj_remove_flag(s_bg, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(s_bg, on_bg_draw, LV_EVENT_DRAW_MAIN, NULL);
 
-    /* Fireflies: a fixed pool, behind the hands and markers. */
-    srand((unsigned)time(NULL) ^ 0x9e3779b9u);
-    for (int i = 0; i < FIREFLY_COUNT; i++)
-    {
-        firefly_t *f = &s_flies[i];
-        firefly_seed(f);
-        lv_obj_t *dot = lv_obj_create(tile);
-        lv_obj_remove_style_all(dot);
-        lv_obj_set_size(dot, 4, 4);
-        lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
-        lv_obj_set_style_bg_color(dot, rgb(f->color), 0);
-        lv_obj_set_style_bg_opa(dot, LV_OPA_60, 0);
-        lv_obj_set_style_shadow_width(dot, 6, 0);
-        lv_obj_set_style_shadow_color(dot, rgb(f->color), 0);
-        lv_obj_set_style_shadow_opa(dot, LV_OPA_40, 0);
-        lv_obj_remove_flag(dot, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
-        f->dot = dot;
-    }
-
-    /* Four cyan capsule markers at the cardinal positions, above the fireflies.
-     * A short, thick, rounded line reads as a rounded capsule. */
+    /* Four cyan capsule markers at the cardinal positions. */
     for (int i = 0; i < 4; i++)
     {
-        float deg = i * 90.0f; /* 0=3o'clock ... */
+        float deg = i * 90.0f;
         lv_obj_t *m = lv_line_create(tile);
         lv_obj_remove_style_all(m);
         lv_obj_set_style_line_width(m, 9, 0);
@@ -478,15 +459,21 @@ void muse_clock_ui_build(lv_obj_t *tile)
         s_markers[i] = m;
     }
 
-    /* Hands: a soft wide halo, a brighter magenta halo, then a pale-pink core.
-     * Layered lines give the glow without the rectangular bounding-box shadow a
-     * line object would otherwise cast. Hour short, minute long. */
+    /* Hour/minute hands. */
     s_hour[0] = make_hand(tile, 18, COL_MAGENTA);
     s_hour[1] = make_hand(tile, 10, COL_HAND);
     s_hour[2] = make_hand(tile, 4, COL_HAND_CORE);
     s_min[0] = make_hand(tile, 16, COL_MAGENTA);
     s_min[1] = make_hand(tile, 8, COL_HAND);
     s_min[2] = make_hand(tile, 3, COL_HAND_CORE);
+
+    /* Second indicator: only a short white head near the rim. */
+    s_sec_head = lv_line_create(tile);
+    lv_obj_remove_style_all(s_sec_head);
+    lv_obj_set_style_line_width(s_sec_head, SECOND_HEAD_WIDTH, 0);
+    lv_obj_set_style_line_color(s_sec_head, lv_color_white(), 0);
+    lv_obj_set_style_line_rounded(s_sec_head, true, 0);
+    lv_obj_remove_flag(s_sec_head, LV_OBJ_FLAG_CLICKABLE);
 
     /* Centre pivot, above the hands. */
     s_pivot = lv_obj_create(tile);
@@ -502,6 +489,19 @@ void muse_clock_ui_build(lv_obj_t *tile)
     lv_obj_remove_flag(s_pivot, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_align(s_pivot, LV_ALIGN_CENTER, 0, 0);
 
+    /* Bottom date label: small font with inline rainbow recolor. */
+    s_date_lbl = lv_label_create(tile);
+    lv_obj_remove_style_all(s_date_lbl);
+#if LV_FONT_MONTSERRAT_12
+    lv_obj_set_style_text_font(s_date_lbl, &lv_font_montserrat_12, 0);
+#else
+    lv_obj_set_style_text_font(s_date_lbl, &lv_font_montserrat_14, 0);
+#endif
+    lv_obj_set_style_text_align(s_date_lbl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(s_date_lbl, w - 24);
+    lv_obj_align(s_date_lbl, LV_ALIGN_BOTTOM_MID, 0, -18);
+    lv_label_set_recolor(s_date_lbl, true);
+
     update_hands();
 
     /* Free page-owned timers if the tile (and so the whole page) is destroyed. */
@@ -516,17 +516,11 @@ void muse_clock_ui_tick(bool visible)
     }
     if (visible && !s_running)
     {
-        /* Becoming visible: show the right time at once, place the fireflies in
-         * their kept positions, then resume exactly one of each timer. */
+        /* Becoming visible: show the right time at once, then run one timer. */
         update_hands();
-        fly_timer_cb(NULL); /* position the pool now, before its timer ticks */
         if (!s_hand_timer)
         {
             s_hand_timer = lv_timer_create(hand_timer_cb, HAND_PERIOD_MS, NULL);
-        }
-        if (!s_fly_timer)
-        {
-            s_fly_timer = lv_timer_create(fly_timer_cb, FIREFLY_PERIOD_MS, NULL);
         }
         s_running = true;
     }
@@ -537,11 +531,6 @@ void muse_clock_ui_tick(bool visible)
         {
             lv_timer_del(s_hand_timer);
             s_hand_timer = NULL;
-        }
-        if (s_fly_timer)
-        {
-            lv_timer_del(s_fly_timer);
-            s_fly_timer = NULL;
         }
         s_running = false;
     }

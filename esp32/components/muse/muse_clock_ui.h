@@ -21,13 +21,12 @@
 #include "lvgl.h"
 
 /*
- * The clock tile (swipe right from Muse): a futuristic neon analog clock with a
- * slow firefly layer. Static artwork (bezel, ticks, cardinal markers, specks)
- * is drawn with lightweight LVGL vector draws and cached by the widget's own
- * redraw clipping; only the hands and fireflies move.
+ * The clock tile (swipe right from Muse): a neon analog clock over an optional
+ * sky background image. Static artwork (bezel, ticks, cardinal markers, specks)
+ * is drawn with lightweight LVGL vector draws, and only the hands/date update.
  *
- * Runs entirely in the LVGL task. All page-owned timers start only while the
- * tile is visible and stop when it is hidden, so a hidden page does no work.
+ * Runs entirely in the LVGL task. Page-owned timers start only while the tile
+ * is visible and stop when it is hidden, so a hidden page does no work.
  */
 
 /* Build the clock once into `tile`. Starts no timers. */

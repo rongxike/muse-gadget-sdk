@@ -1,0 +1,17 @@
+﻿- Target device: Waveshare 175C.
+- Keep behavior changes in the UI/input layers; avoid board core or hardware-driver changes unless explicitly requested.
+- Clock page requirements:
+  - Do not use fireflies.
+  - Use the sky background image file `clock_sky.png`.
+  - The second hand must be a short white rim bar.
+  - Date format must be `dd-MMM-yyyy` with small rainbow text.
+  - Keep the page movement smooth.
+- Navigation requirement:
+  - A right-to-left swipe from the clock page must return to the AI main page.
+- Preserve existing wake behavior:
+  - `sleep talk` press wakes only.
+  - The next press starts talk.
+- Memory and stability guidance:
+  - Avoid high-frequency animations.
+  - Stop non-essential animation after idle.
+- Prefer targeted, minimal edits that preserve existing patterns and user-facing behavior unless a requirement explicitly changes it.

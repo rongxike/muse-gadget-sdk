@@ -428,45 +428,45 @@ static void invalidate_muse(void)
 
 static lv_obj_t *make_label(lv_obj_t *parent, const lv_font_t *font, uint32_t color);
 
-/* A microphone from primitives: LVGL's symbol font has none. */
-static lv_obj_t *make_mic(lv_obj_t *parent, int size)
-{
-    lv_obj_t *box = lv_obj_create(parent);
-    lv_obj_remove_style_all(box);
-    lv_obj_set_size(box, size, size);
-    lv_obj_remove_flag(box, LV_OBJ_FLAG_CLICKABLE);
-    int stroke = size / 10 > 1 ? size / 10 : 1;
+// /* A microphone from primitives: LVGL's symbol font has none. */
+// static lv_obj_t *make_mic(lv_obj_t *parent, int size)
+// {
+//     lv_obj_t *box = lv_obj_create(parent);
+//     lv_obj_remove_style_all(box);
+//     lv_obj_set_size(box, size, size);
+//     lv_obj_remove_flag(box, LV_OBJ_FLAG_CLICKABLE);
+//     int stroke = size / 10 > 1 ? size / 10 : 1;
 
-    lv_obj_t *head = lv_obj_create(box);
-    lv_obj_remove_style_all(head);
-    lv_obj_set_size(head, size * 3 / 8, size * 9 / 16);
-    lv_obj_set_style_radius(head, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_opa(head, LV_OPA_COVER, 0);
-    lv_obj_align(head, LV_ALIGN_TOP_MID, 0, 0);
+//     lv_obj_t *head = lv_obj_create(box);
+//     lv_obj_remove_style_all(head);
+//     lv_obj_set_size(head, size * 3 / 8, size * 9 / 16);
+//     lv_obj_set_style_radius(head, LV_RADIUS_CIRCLE, 0);
+//     lv_obj_set_style_bg_opa(head, LV_OPA_COVER, 0);
+//     lv_obj_align(head, LV_ALIGN_TOP_MID, 0, 0);
 
-    lv_obj_t *cradle = lv_arc_create(box);
-    lv_obj_set_size(cradle, size * 5 / 8 + stroke, size * 5 / 8 + stroke);
-    lv_arc_set_bg_angles(cradle, 0, 180);
-    lv_obj_remove_style(cradle, NULL, LV_PART_KNOB);
-    lv_obj_remove_flag(cradle, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_style_pad_all(cradle, 0, 0);
-    lv_obj_set_style_arc_opa(cradle, LV_OPA_TRANSP, LV_PART_INDICATOR);
-    lv_obj_set_style_arc_width(cradle, stroke, LV_PART_MAIN);
-    lv_obj_align(cradle, LV_ALIGN_TOP_MID, 0, 0);
+//     lv_obj_t *cradle = lv_arc_create(box);
+//     lv_obj_set_size(cradle, size * 5 / 8 + stroke, size * 5 / 8 + stroke);
+//     lv_arc_set_bg_angles(cradle, 0, 180);
+//     lv_obj_remove_style(cradle, NULL, LV_PART_KNOB);
+//     lv_obj_remove_flag(cradle, LV_OBJ_FLAG_CLICKABLE);
+//     lv_obj_set_style_pad_all(cradle, 0, 0);
+//     lv_obj_set_style_arc_opa(cradle, LV_OPA_TRANSP, LV_PART_INDICATOR);
+//     lv_obj_set_style_arc_width(cradle, stroke, LV_PART_MAIN);
+//     lv_obj_align(cradle, LV_ALIGN_TOP_MID, 0, 0);
 
-    lv_obj_t *stem = lv_obj_create(box);
-    lv_obj_remove_style_all(stem);
-    lv_obj_set_size(stem, stroke, size * 7 / 8 - size * 5 / 8);
-    lv_obj_set_style_bg_opa(stem, LV_OPA_COVER, 0);
-    lv_obj_align(stem, LV_ALIGN_TOP_MID, 0, size * 5 / 8);
+//     lv_obj_t *stem = lv_obj_create(box);
+//     lv_obj_remove_style_all(stem);
+//     lv_obj_set_size(stem, stroke, size * 7 / 8 - size * 5 / 8);
+//     lv_obj_set_style_bg_opa(stem, LV_OPA_COVER, 0);
+//     lv_obj_align(stem, LV_ALIGN_TOP_MID, 0, size * 5 / 8);
 
-    lv_obj_t *base = lv_obj_create(box);
-    lv_obj_remove_style_all(base);
-    lv_obj_set_size(base, size * 3 / 8, stroke);
-    lv_obj_set_style_bg_opa(base, LV_OPA_COVER, 0);
-    lv_obj_align(base, LV_ALIGN_TOP_MID, 0, size * 7 / 8);
-    return box;
-}
+//     lv_obj_t *base = lv_obj_create(box);
+//     lv_obj_remove_style_all(base);
+//     lv_obj_set_size(base, size * 3 / 8, stroke);
+//     lv_obj_set_style_bg_opa(base, LV_OPA_COVER, 0);
+//     lv_obj_align(base, LV_ALIGN_TOP_MID, 0, size * 7 / 8);
+//     return box;
+// }
 
 static void color_mic(lv_obj_t *icon, uint32_t color)
 {
@@ -485,21 +485,21 @@ static void set_mic_color(uint32_t color)
     color_mic(s_mic_icon, color); /* legacy face icon only */
 }
 
-static void on_touch_mic(lv_event_t *e)
-{
-    switch (lv_event_get_code(e))
-    {
-    case LV_EVENT_PRESSED:
-        muse_input_touch_talk(true);
-        break;
-    case LV_EVENT_RELEASED:
-    case LV_EVENT_PRESS_LOST:
-        muse_input_touch_talk(false);
-        break;
-    default:
-        break;
-    }
-}
+// static void on_touch_mic(lv_event_t *e)
+// {
+//     switch (lv_event_get_code(e))
+//     {
+//     case LV_EVENT_PRESSED:
+//         muse_input_touch_talk(true);
+//         break;
+//     case LV_EVENT_RELEASED:
+//     case LV_EVENT_PRESS_LOST:
+//         muse_input_touch_talk(false);
+//         break;
+//     default:
+//         break;
+//     }
+// }
 
 /* Icons beside the physical buttons, in place of an instruction caption. */
 static void build_button_icons(lv_obj_t *face)
@@ -955,8 +955,10 @@ static void build_screen(void)
         lv_obj_set_style_bg_color(s_tv, lv_color_black(), 0);
         lv_obj_set_style_bg_opa(s_tv, LV_OPA_COVER, 0);
         lv_obj_set_scrollbar_mode(s_tv, LV_SCROLLBAR_MODE_OFF);
-        /* Column 0: the clock. It allows a swipe back to the right (to Muse). */
-        s_clock_tile = lv_tileview_add_tile(s_tv, 0, 0, LV_DIR_RIGHT);
+        lv_obj_set_style_anim_duration(s_tv, 120, 0);
+        /* Column 0: the clock. Allow both swipe directions so right-to-left can
+         * always return to Muse naturally on touch panels. */
+        s_clock_tile = lv_tileview_add_tile(s_tv, 0, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
         lv_obj_set_scrollbar_mode(s_clock_tile, LV_SCROLLBAR_MODE_OFF);
         lv_obj_set_style_bg_color(s_clock_tile, lv_color_black(), 0);
         lv_obj_set_style_bg_opa(s_clock_tile, LV_OPA_COVER, 0);
@@ -1197,7 +1199,8 @@ void muse_ui_stop(void)
         s_settings = NULL;
     }
     s_clock_tile = NULL; /* child of s_tv, freed with it (its DELETE cb runs) */
-    if (s_tv) {
+    if (s_tv)
+    {
         lv_obj_del(s_tv);
         s_tv = NULL;
     }
@@ -1274,20 +1277,20 @@ static void on_any_press(lv_event_t *e)
     muse_state_poke();
 }
 
-static lv_obj_t *make_control_icon(lv_obj_t *scr, const muse_button_hint_t *pos,
-                                   const char *symbol, uint32_t color)
-{
-    lv_obj_t *icon = make_label(scr, &lv_font_montserrat_28, color);
-    lv_obj_set_size(icon, 36, 36);
-    lv_obj_set_style_bg_color(icon, lv_color_black(), 0);
-    lv_obj_set_style_bg_opa(icon, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(icon, 6, 0);
-    lv_label_set_long_mode(icon, LV_LABEL_LONG_MODE_CLIP);
-    lv_label_set_text(icon, symbol);
-    lv_obj_remove_flag(icon, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_align(icon, pos->align, pos->x, pos->y);
-    return icon;
-}
+// static lv_obj_t *make_control_icon(lv_obj_t *scr, const muse_button_hint_t *pos,
+//                                    const char *symbol, uint32_t color)
+// {
+//     lv_obj_t *icon = make_label(scr, &lv_font_montserrat_28, color);
+//     lv_obj_set_size(icon, 36, 36);
+//     lv_obj_set_style_bg_color(icon, lv_color_black(), 0);
+//     lv_obj_set_style_bg_opa(icon, LV_OPA_COVER, 0);
+//     lv_obj_set_style_radius(icon, 6, 0);
+//     lv_label_set_long_mode(icon, LV_LABEL_LONG_MODE_CLIP);
+//     lv_label_set_text(icon, symbol);
+//     lv_obj_remove_flag(icon, LV_OBJ_FLAG_CLICKABLE);
+//     lv_obj_align(icon, pos->align, pos->x, pos->y);
+//     return icon;
+// }
 
 /* Icons only beside the physical controls, including before pairing. */
 static void update_control_hints(muse_mode_t mode)
@@ -1496,7 +1499,8 @@ static void update_chrome(float now)
     if (s_tv)
     {
         lv_obj_t *active = lv_tileview_get_tile_active(s_tv);
-        int page = active == s_clock_tile ? 0 : active == s_settings ? 2 : 1;
+        int page = active == s_clock_tile ? 0 : active == s_settings ? 2
+                                                                     : 1;
         bool subpage = muse_settings_ui_in_subpage();
         bool swipe = page != 2 || !subpage;
         if (swipe != lv_obj_has_flag(s_tv, LV_OBJ_FLAG_SCROLLABLE))
@@ -1515,13 +1519,11 @@ static void update_chrome(float now)
             }
             s_shown_page = shown;
         }
-        /* Drive each page's tick with whether it is (even partly) on screen, so
-         * timers run only while a page is visible. Muse rests scrolled to the
-         * middle tile; left of that is the clock, right of it is settings. */
-        int32_t sx = lv_obj_get_scroll_x(s_tv);
-        int32_t face_x = lv_obj_get_x(s_face);
-        muse_settings_ui_tick(sx > face_x);
-        muse_clock_ui_tick(sx < face_x);
+        /* Drive each page's tick from tile ownership instead of partial
+         * visibility: this keeps transitions smooth by avoiding timer updates on
+         * off-center pages while a swipe animation is in progress. */
+        muse_settings_ui_tick(active == s_settings);
+        muse_clock_ui_tick(active == s_clock_tile);
     }
 
     /* Joining, the icon blinks: the compact layout has no state label. */

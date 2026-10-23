@@ -22,6 +22,13 @@
 set(srcs)
 set(embed)
 set(embed_txt)
+
+# Optional clock background image. If present, the clock page uses it.
+file(GLOB clock_bg "${COMPONENT_DIR}/clock_sky.png")
+if(clock_bg)
+    list(APPEND embed "clock_sky.png")
+endif()
+
 if(CONFIG_MUSE_ENABLED)
     list(APPEND srcs
         "muse_app.c"
@@ -60,7 +67,7 @@ if(CONFIG_MUSE_ENABLED)
     # Your own character (tools/muse/AVATAR_RECIPE.md) stands in for the default
     # avatar when avatar/muse_pixel.c exists here; this avatar/ is gitignored. The
     # default is in avatar/ at the top of the project.
-    file(GLOB custom_avatar CONFIGURE_DEPENDS "${COMPONENT_DIR}/avatar/muse_pixel.c")
+    file(GLOB custom_avatar "${COMPONENT_DIR}/avatar/muse_pixel.c")
     if(custom_avatar)
         message(STATUS "Custom avatar: components/muse/avatar/muse_pixel.c")
         list(APPEND srcs "avatar/muse_pixel.c")

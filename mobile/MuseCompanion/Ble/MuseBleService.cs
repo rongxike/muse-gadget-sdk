@@ -24,6 +24,7 @@ public class MuseBleService
     private IDevice? _device;
     private ICharacteristic? _hello;
     private ICharacteristic? _reply;
+    private bool _disconnecting;
 
     public MuseBleService()
     {
@@ -172,6 +173,7 @@ public class MuseBleService
 
     public async Task DisconnectAsync()
     {
+        _disconnecting = true;
         HandshakeChanged?.Invoke(false);
         if (_hello is not null)
         {
@@ -201,16 +203,22 @@ public class MuseBleService
             _device = null;
         }
         StatusChanged?.Invoke(null);
+        _disconnecting = false;
     }
 
     private void OnDeviceDisconnected(object? sender, DeviceEventArgs e)
     {
-        Emit($"Disconnected from {e.Device.Name}.");
-        StatusChanged?.Invoke(null);
-        HandshakeChanged?.Invoke(false);
         _hello = null;
         _reply = null;
         _device = null;
+        // During an intentional DisconnectAsync the events are raised there; avoid firing twice.
+        if (_disconnecting)
+        {
+            return;
+        }
+        Emit($"Disconnected from {e.Device.Name}.");
+        StatusChanged?.Invoke(null);
+        HandshakeChanged?.Invoke(false);
     }
 
     private static string Decode(byte[]? value)

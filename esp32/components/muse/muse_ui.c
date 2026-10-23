@@ -114,6 +114,12 @@ bool muse_ui_face_active(void)
 }
 static lv_obj_t *s_settings;
 static lv_obj_t *s_clock_tile; /* the neon clock page, one swipe right of Muse */
+/* Idle pages shown as dots: clock (optional), Muse, settings. */
+#if CONFIG_MUSE_WATCH_FACE
+#define MUSE_PAGE_COUNT 3
+#else
+#define MUSE_PAGE_COUNT 2
+#endif
 static lv_obj_t *s_dots[3];
 static lv_obj_t *s_wifi_icon;
 static lv_obj_t *s_ble_icon;
@@ -956,14 +962,20 @@ static void build_screen(void)
         lv_obj_set_style_bg_opa(s_tv, LV_OPA_COVER, 0);
         lv_obj_set_scrollbar_mode(s_tv, LV_SCROLLBAR_MODE_OFF);
         lv_obj_set_style_anim_duration(s_tv, 120, 0);
+        /* Column layout depends on whether the watch face is enabled. With it,
+         * column 0 is the clock, 1 is Muse, 2 is settings; without it Muse is
+         * column 0 and settings column 1. */
+        int col = 0;
+#if CONFIG_MUSE_WATCH_FACE
         /* Column 0: the clock. Allow both swipe directions so right-to-left can
          * always return to Muse naturally on touch panels. */
-        s_clock_tile = lv_tileview_add_tile(s_tv, 0, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
+        s_clock_tile = lv_tileview_add_tile(s_tv, col++, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
         lv_obj_set_scrollbar_mode(s_clock_tile, LV_SCROLLBAR_MODE_OFF);
         lv_obj_set_style_bg_color(s_clock_tile, lv_color_black(), 0);
         lv_obj_set_style_bg_opa(s_clock_tile, LV_OPA_COVER, 0);
-        /* Column 1: Muse. Swipe right->left for settings, left->right for clock. */
-        s_face = lv_tileview_add_tile(s_tv, 1, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
+#endif
+        /* Muse. Swipe right->left for settings, left->right for clock. */
+        s_face = lv_tileview_add_tile(s_tv, col++, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
         /* It never scrolls, but LVGL would size its scrollbars from all its
          * children every time it draws any part of it. */
         lv_obj_set_scrollbar_mode(s_face, LV_SCROLLBAR_MODE_OFF);
@@ -971,8 +983,8 @@ static void build_screen(void)
          * shows as a different-coloured square around the character. */
         lv_obj_set_style_bg_color(s_face, lv_color_black(), 0);
         lv_obj_set_style_bg_opa(s_face, LV_OPA_COVER, 0);
-        /* Column 2: settings. Swipe back right->... left (toward Muse). */
-        s_settings = lv_tileview_add_tile(s_tv, 2, 0, LV_DIR_LEFT);
+        /* Settings. Swipe back right->... left (toward Muse). */
+        s_settings = lv_tileview_add_tile(s_tv, col++, 0, LV_DIR_LEFT);
         lv_obj_add_event_cb(s_tv, tile_changed_cb, LV_EVENT_VALUE_CHANGED, NULL);
         face = s_face;
     }
@@ -1321,8 +1333,8 @@ static void build_overlays(void)
 {
     lv_obj_t *scr = lv_screen_active();
 
-    /* Page dots: clock, Muse, settings. */
-    for (int i = 0; i < 3 && s_tv; i++)
+    /* Page dots: clock (when enabled), Muse, settings. */
+    for (int i = 0; i < MUSE_PAGE_COUNT && s_tv; i++)
     {
         lv_obj_t *d = lv_obj_create(scr);
         lv_obj_remove_style_all(d);
@@ -1331,7 +1343,7 @@ static void build_overlays(void)
         lv_obj_set_style_bg_opa(d, LV_OPA_COVER, 0);
         lv_obj_set_style_bg_color(d, lv_color_hex(COLOR_DOT_OFF), 0);
         lv_obj_remove_flag(d, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_align(d, LV_ALIGN_BOTTOM_MID, (i - 1) * 16, -14);
+        lv_obj_align(d, LV_ALIGN_BOTTOM_MID, (i * 2 - (MUSE_PAGE_COUNT - 1)) * 8, -14);
         s_dots[i] = d;
     }
 
@@ -1499,23 +1511,27 @@ static void update_chrome(float now)
     if (s_tv)
     {
         lv_obj_t *active = lv_tileview_get_tile_active(s_tv);
-        int page = active == s_clock_tile ? 0 : active == s_settings ? 2
-                                                                     : 1;
+        bool on_settings = active == s_settings;
+#if CONFIG_MUSE_WATCH_FACE
+        int page = active == s_clock_tile ? 0 : on_settings ? 2 : 1;
+#else
+        int page = on_settings ? 1 : 0;
+#endif
         bool subpage = muse_settings_ui_in_subpage();
-        bool swipe = page != 2 || !subpage;
+        bool swipe = !on_settings || !subpage;
         if (swipe != lv_obj_has_flag(s_tv, LV_OBJ_FLAG_SCROLLABLE))
         {
             lv_obj_set_flag(s_tv, LV_OBJ_FLAG_SCROLLABLE, swipe);
         }
-        /* Unique id of the currently shown view (page 0..2, plus the settings
+        /* Unique id of the currently shown view (page index, plus the settings
          * sub-page flag) so the dots are only restyled when it actually changes. */
         int shown = page * 2 + subpage;
         if (shown != s_shown_page)
         {
-            for (int i = 0; i < 3; i++)
+            for (int i = 0; i < MUSE_PAGE_COUNT; i++)
             {
                 lv_obj_set_style_bg_color(s_dots[i], lv_color_hex(i == page ? COLOR_ACCENT : COLOR_DOT_OFF), 0);
-                lv_obj_set_flag(s_dots[i], LV_OBJ_FLAG_HIDDEN, page == 2 && subpage);
+                lv_obj_set_flag(s_dots[i], LV_OBJ_FLAG_HIDDEN, on_settings && subpage);
             }
             s_shown_page = shown;
         }

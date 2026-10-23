@@ -1,0 +1,14 @@
+# .NET / MAUI build output
+bin/
+obj/
+*.user
+*.binlog
+
+# IDE
+.vs/
+.idea/
+.vscode/
+
+# Android
+*.keystore
+*.jks

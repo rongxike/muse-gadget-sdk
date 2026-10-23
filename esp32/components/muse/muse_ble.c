@@ -45,8 +45,26 @@ static const ble_uuid128_t SVC_UUID = MUSE_UUID(0x01);
 static const ble_uuid128_t CMD_UUID = MUSE_UUID(0x02);
 static const ble_uuid128_t STATUS_UUID = MUSE_UUID(0x03);
 
+/*
+ * A second, deliberately simple "handshake" service used by the companion
+ * mobile app (see mobile/MuseCompanion). Unlike the phone-setup service above
+ * it needs no pairing/passkey, so a basic app can connect and exchange a
+ * greeting out of the box:
+ *
+ *   HELLO (read/notify)  the device pushes "hello" as soon as the app
+ *                        subscribes, right after it connects
+ *   REPLY (write)        the app writes "hi" back to complete the handshake
+ */
+static const ble_uuid128_t HS_SVC_UUID = MUSE_UUID(0x10);
+static const ble_uuid128_t HS_HELLO_UUID = MUSE_UUID(0x11);
+static const ble_uuid128_t HS_REPLY_UUID = MUSE_UUID(0x12);
+
+#define HS_HELLO_MSG "hello"
+#define HS_REPLY_MAX 32
+
 static uint16_t s_conn = BLE_HS_CONN_HANDLE_NONE;
 static uint16_t s_status_handle;
+static uint16_t s_hello_handle;
 static volatile uint32_t s_passkey;
 static volatile bool s_secure;
 static char s_name[32];   /* the whole "MuseGadget-XXXXXX", not a prefix of it */
@@ -230,6 +248,51 @@ static int on_access(uint16_t conn, uint16_t attr, struct ble_gatt_access_ctxt *
     return BLE_ATT_ERR_UNLIKELY;
 }
 
+/* ---- handshake service (companion app) ---- */
+
+/* Pushes "hello" to the app; called once it subscribes to HELLO. */
+static void handshake_send_hello(void)
+{
+    if (s_conn == BLE_HS_CONN_HANDLE_NONE || !s_hello_handle) {
+        return;
+    }
+    struct os_mbuf *om = ble_hs_mbuf_from_flat(HS_HELLO_MSG, strlen(HS_HELLO_MSG));
+    if (om) {
+        ble_gatts_notify_custom(s_conn, s_hello_handle, om);
+        ESP_LOGI(TAG, "handshake: sent \"%s\"", HS_HELLO_MSG);
+    }
+}
+
+static int on_handshake(uint16_t conn, uint16_t attr, struct ble_gatt_access_ctxt *ctxt, void *arg)
+{
+    (void)conn;
+    (void)attr;
+    (void)arg;
+    if (ctxt->op == BLE_GATT_ACCESS_OP_READ_CHR) {
+        /* Let a reader poll the greeting too, not only notify subscribers. */
+        return os_mbuf_append(ctxt->om, HS_HELLO_MSG, strlen(HS_HELLO_MSG)) == 0
+                   ? 0
+                   : BLE_ATT_ERR_INSUFFICIENT_RES;
+    }
+    if (ctxt->op == BLE_GATT_ACCESS_OP_WRITE_CHR) {
+        char reply[HS_REPLY_MAX + 1];
+        uint16_t len = 0;
+        int rc = ble_hs_mbuf_to_flat(ctxt->om, reply, HS_REPLY_MAX, &len);
+        if (rc != 0) {
+            return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+        }
+        reply[len] = '\0';
+        while (len && (reply[len - 1] == '\n' || reply[len - 1] == '\r')) {
+            reply[--len] = '\0';
+        }
+        ESP_LOGI(TAG, "handshake: got \"%s\"", reply);
+        snprintf(s_last, sizeof(s_last), "handshake: %s", reply);
+        muse_state_poke();
+        return 0;
+    }
+    return BLE_ATT_ERR_UNLIKELY;
+}
+
 static const struct ble_gatt_svc_def SERVICES[] = {
     {
         .type = BLE_GATT_SVC_TYPE_PRIMARY,
@@ -246,6 +309,25 @@ static const struct ble_gatt_svc_def SERVICES[] = {
                 .val_handle = &s_status_handle,
                 .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_READ_ENC | BLE_GATT_CHR_F_READ_AUTHEN |
                          BLE_GATT_CHR_F_NOTIFY,
+            },
+            { 0 },
+        },
+    },
+    {
+        /* No *_ENC/*_AUTHEN flags: the companion app handshake needs no pairing. */
+        .type = BLE_GATT_SVC_TYPE_PRIMARY,
+        .uuid = &HS_SVC_UUID.u,
+        .characteristics = (struct ble_gatt_chr_def[]){
+            {
+                .uuid = &HS_HELLO_UUID.u,
+                .access_cb = on_handshake,
+                .val_handle = &s_hello_handle,
+                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
+            },
+            {
+                .uuid = &HS_REPLY_UUID.u,
+                .access_cb = on_handshake,
+                .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP,
             },
             { 0 },
         },
@@ -295,6 +377,12 @@ int muse_ble_gap_event(struct ble_gap_event *ev)
         s_conn = BLE_HS_CONN_HANDLE_NONE;
         s_passkey = 0;
         s_secure = false;
+        break;
+    case BLE_GAP_EVENT_SUBSCRIBE:
+        /* The companion app just enabled notifications on HELLO: greet it. */
+        if (ev->subscribe.attr_handle == s_hello_handle && ev->subscribe.cur_notify) {
+            handshake_send_hello();
+        }
         break;
     case BLE_GAP_EVENT_PASSKEY_ACTION:
         if (ev->passkey.params.action == BLE_SM_IOACT_DISP) {

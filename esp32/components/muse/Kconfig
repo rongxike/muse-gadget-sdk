@@ -209,6 +209,17 @@ menu "Muse"
             syncs, and when it can't, it reads --:--. The time is queried once
             at startup; the device's clock ticks it along from there.
 
+    config MUSE_WATCH_FACE
+        bool "Show the swipe-right watch face (neon clock tile)"
+        depends on MUSE_ENABLED
+        default y
+        help
+            On touch boards, add a neon analog "watch face" tile one swipe to
+            the right of Muse (see muse_clock_ui.c). Turn this off to keep the
+            idle screen on Muse and settings only; the watch-face code is still
+            built in, just not wired into the tile view. Disabling it also saves
+            the hand-animation work the tile would do while it is visible.
+
     config MUSE_CLOCK_TZ
         string "Clock timezone (POSIX TZ string)"
         depends on MUSE_CLOCK

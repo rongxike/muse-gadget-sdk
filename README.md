@@ -75,7 +75,7 @@ Optional flags:
 # Force a serial port
 .\scripts\deploy-routellm.ps1 -Port COM5
 
-# Build only (skip flashing)
+# Build only (skip flashing) 
 .\scripts\deploy-routellm.ps1 -BuildOnly
 
 # Regenerate build sdkconfig before build

@@ -1523,7 +1523,9 @@ static void update_chrome(float now)
          * visibility: this keeps transitions smooth by avoiding timer updates on
          * off-center pages while a swipe animation is in progress. */
         muse_settings_ui_tick(active == s_settings);
+#if CONFIG_MUSE_CLOCK
         muse_clock_ui_tick(active == s_clock_tile);
+#endif
     }
 
     /* Joining, the icon blinks: the compact layout has no state label. */
@@ -2052,6 +2054,7 @@ esp_err_t muse_ui_start(void)
     {
         muse_menu_build(lv_screen_active(), s_w, s_h);
     }
+#if CONFIG_MUSE_CLOCK
     if (s_clock_tile)
     {
         muse_clock_ui_build(s_clock_tile);
@@ -2060,6 +2063,7 @@ esp_err_t muse_ui_start(void)
         lv_obj_update_layout(s_tv);
         lv_tileview_set_tile(s_tv, s_face, LV_ANIM_OFF);
     }
+#endif
     build_overlays();
     s_frame_timer = lv_timer_create(frame_tick, muse_board->frame_ms, NULL);
     s_ready = true;

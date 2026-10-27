@@ -44,6 +44,9 @@
 #include "muse_pixel.h"
 #include "muse_settings.h"
 #include "muse_settings_ui.h"
+#if CONFIG_MUSE_FLAPPY
+#include "muse_flappy_ui.h"
+#endif
 #include "muse_state.h"
 #include "muse_text.h"
 #include "muse_wifi.h"
@@ -114,7 +117,13 @@ bool muse_ui_face_active(void)
 }
 static lv_obj_t *s_settings;
 static lv_obj_t *s_clock_tile; /* the neon clock page, one swipe right of Muse */
-static lv_obj_t *s_dots[3];
+#if CONFIG_MUSE_FLAPPY
+static lv_obj_t *s_flappy_tile; /* the Flappy Bird game, far right of Muse */
+#define MUSE_UI_PAGES 4
+#else
+#define MUSE_UI_PAGES 3
+#endif
+static lv_obj_t *s_dots[MUSE_UI_PAGES];
 static lv_obj_t *s_wifi_icon;
 static lv_obj_t *s_ble_icon;
 static lv_obj_t *s_cover;
@@ -972,7 +981,17 @@ static void build_screen(void)
         lv_obj_set_style_bg_color(s_face, lv_color_black(), 0);
         lv_obj_set_style_bg_opa(s_face, LV_OPA_COVER, 0);
         /* Column 2: settings. Swipe back right->... left (toward Muse). */
+        /* Column 2: settings. Swipe back toward Muse; with the game enabled it
+         * also swipes right to reveal Flappy Bird at column 3. */
+#if CONFIG_MUSE_FLAPPY
+        s_settings = lv_tileview_add_tile(s_tv, 2, 0, LV_DIR_LEFT | LV_DIR_RIGHT);
+        s_flappy_tile = lv_tileview_add_tile(s_tv, 3, 0, LV_DIR_LEFT);
+        lv_obj_set_scrollbar_mode(s_flappy_tile, LV_SCROLLBAR_MODE_OFF);
+        lv_obj_set_style_bg_color(s_flappy_tile, lv_color_black(), 0);
+        lv_obj_set_style_bg_opa(s_flappy_tile, LV_OPA_COVER, 0);
+#else
         s_settings = lv_tileview_add_tile(s_tv, 2, 0, LV_DIR_LEFT);
+#endif
         lv_obj_add_event_cb(s_tv, tile_changed_cb, LV_EVENT_VALUE_CHANGED, NULL);
         face = s_face;
     }
@@ -1199,6 +1218,9 @@ void muse_ui_stop(void)
         s_settings = NULL;
     }
     s_clock_tile = NULL; /* child of s_tv, freed with it (its DELETE cb runs) */
+#if CONFIG_MUSE_FLAPPY
+    s_flappy_tile = NULL; /* child of s_tv, freed with it (its DELETE cb runs) */
+#endif
     if (s_tv)
     {
         lv_obj_del(s_tv);
@@ -1321,8 +1343,8 @@ static void build_overlays(void)
 {
     lv_obj_t *scr = lv_screen_active();
 
-    /* Page dots: clock, Muse, settings. */
-    for (int i = 0; i < 3 && s_tv; i++)
+    /* Page dots: clock, Muse, settings[, flappy]. */
+    for (int i = 0; i < MUSE_UI_PAGES && s_tv; i++)
     {
         lv_obj_t *d = lv_obj_create(scr);
         lv_obj_remove_style_all(d);
@@ -1331,7 +1353,7 @@ static void build_overlays(void)
         lv_obj_set_style_bg_opa(d, LV_OPA_COVER, 0);
         lv_obj_set_style_bg_color(d, lv_color_hex(COLOR_DOT_OFF), 0);
         lv_obj_remove_flag(d, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_align(d, LV_ALIGN_BOTTOM_MID, (i - 1) * 16, -14);
+        lv_obj_align(d, LV_ALIGN_BOTTOM_MID, (int)((i - (MUSE_UI_PAGES - 1) / 2.0f) * 16), -14);
         s_dots[i] = d;
     }
 
@@ -1435,6 +1457,16 @@ static bool update_sleep(void)
         lv_obj_set_style_bg_opa(s_cover, LV_OPA_COVER, 0);
         lv_obj_remove_flag(s_cover, LV_OBJ_FLAG_HIDDEN);
         s_dark = true;
+        /* Sleep freezes every page: their per-frame timers would otherwise keep
+         * rendering to the powered-down panel. update_chrome restarts the active
+         * page on wake. */
+        muse_settings_ui_tick(false);
+#if CONFIG_MUSE_CLOCK
+        muse_clock_ui_tick(false);
+#endif
+#if CONFIG_MUSE_FLAPPY
+        muse_flappy_ui_tick(false);
+#endif
     }
     else if (!asleep && s_dark)
     {
@@ -1501,18 +1533,24 @@ static void update_chrome(float now)
         lv_obj_t *active = lv_tileview_get_tile_active(s_tv);
         int page = active == s_clock_tile ? 0 : active == s_settings ? 2
                                                                      : 1;
+#if CONFIG_MUSE_FLAPPY
+        if (active == s_flappy_tile)
+        {
+            page = 3;
+        }
+#endif
         bool subpage = muse_settings_ui_in_subpage();
         bool swipe = page != 2 || !subpage;
         if (swipe != lv_obj_has_flag(s_tv, LV_OBJ_FLAG_SCROLLABLE))
         {
             lv_obj_set_flag(s_tv, LV_OBJ_FLAG_SCROLLABLE, swipe);
         }
-        /* Unique id of the currently shown view (page 0..2, plus the settings
+        /* Unique id of the currently shown view (page 0..3, plus the settings
          * sub-page flag) so the dots are only restyled when it actually changes. */
         int shown = page * 2 + subpage;
         if (shown != s_shown_page)
         {
-            for (int i = 0; i < 3; i++)
+            for (int i = 0; i < MUSE_UI_PAGES; i++)
             {
                 lv_obj_set_style_bg_color(s_dots[i], lv_color_hex(i == page ? COLOR_ACCENT : COLOR_DOT_OFF), 0);
                 lv_obj_set_flag(s_dots[i], LV_OBJ_FLAG_HIDDEN, page == 2 && subpage);
@@ -1525,6 +1563,9 @@ static void update_chrome(float now)
         muse_settings_ui_tick(active == s_settings);
 #if CONFIG_MUSE_CLOCK
         muse_clock_ui_tick(active == s_clock_tile);
+#endif
+#if CONFIG_MUSE_FLAPPY
+        muse_flappy_ui_tick(active == s_flappy_tile);
 #endif
     }
 
@@ -2060,6 +2101,15 @@ esp_err_t muse_ui_start(void)
         muse_clock_ui_build(s_clock_tile);
         /* Muse is the middle tile now; rest on it without animating past the
          * clock at boot. */
+        lv_obj_update_layout(s_tv);
+        lv_tileview_set_tile(s_tv, s_face, LV_ANIM_OFF);
+    }
+#endif
+#if CONFIG_MUSE_FLAPPY
+    if (s_flappy_tile)
+    {
+        muse_flappy_ui_build(s_flappy_tile);
+        /* Keep Muse centred at boot even when the clock page is disabled. */
         lv_obj_update_layout(s_tv);
         lv_tileview_set_tile(s_tv, s_face, LV_ANIM_OFF);
     }

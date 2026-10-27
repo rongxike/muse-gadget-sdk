@@ -219,6 +219,19 @@ menu "Muse"
             DST, "GMT0BST,M3.5.0/1,M10.5.0" is UK time. Note POSIX signs are
             inverted: the number is hours west of UTC, so -8 means UTC+8.
 
+    config MUSE_FLAPPY
+        bool "Show a Flappy Bird game page"
+        depends on MUSE_ENABLED
+        default n
+        help
+            Add a neon Flappy Bird mini-game as a swipe-right page (one tile
+            to the right of the settings page, far right of Muse). Tap to
+            flap; a right-to-left swipe returns to Muse. Art (background,
+            bezel, bird, pipes and the Get Ready / Game Over overlays) is kept
+            in a dedicated "assets" flash partition and blitted directly, so
+            it costs flash but almost no app RAM. The game loop runs only
+            while the page is visible and stops when it is swiped away.
+
     config MUSE_JC3248W535_MIC_GPIO
         int "JC3248W535: GPIO for an external I2S mic's data (SD) line"
         depends on MUSE_BOARD_GUITION_JC3248W535

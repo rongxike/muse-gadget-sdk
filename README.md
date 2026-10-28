@@ -73,13 +73,13 @@ Optional flags:
 
 ```powershell
 # Force a serial port
-.\scripts\deploy-routellm.ps1 -Port COM5
+.\scripts\deploy-routellm.ps1 -Port COM4
 
 # Build only (skip flashing) 
-.\scripts\deploy-routellm.ps1 -BuildOnly
+.\scripts\deploy-routellm.ps1 -BuildOnly -Port COM4 
 
 # Regenerate build sdkconfig before build
-.\scripts\deploy-routellm.ps1 -Reconfigure
+.\scripts\deploy-routellm.ps1 -Reconfigure -Port COM4
 ```
 
 The script builds `esp32/build-muse-routellm` with:

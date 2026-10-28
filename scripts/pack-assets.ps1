@@ -190,11 +190,11 @@ try {
         Ensure-PyModule -Py $Python -Import "PIL" -Package "Pillow"
         Assert-File $lvglConv "LVGLImage.py"
 
-        Write-Host "[images] transparent sprites -> RGB565A8"
+        Write-Host "[images] transparent sprites -> I8"
         foreach ($s in $sprites) {
             $src = Join-Path $SourceDir $s.file
             Assert-File $src "sprite $($s.file)"
-            Convert-Image -Py $Python -Src $src -Name $s.name -Cf "RGB565A8"
+            Convert-Image -Py $Python -Src $src -Name $s.name -Cf "I8"
             Write-Host ("  " + (Show-Size (Join-Path $OutDir "$($s.name).c")))
         }
 
@@ -237,10 +237,11 @@ im.save(dst)
             $resized = Join-Path $ovDir "$($o.name).png"
             if ($o.name -eq "clock_face") {
                 Copy-Item $src $resized -Force
-            } else {
+            }
+            else {
                 Invoke-Py -Py $Python -Code $resizeCode -PyArgs @($src, $resized, "$OverlayScale")
             }
-            Convert-Image -Py $Python -Src $resized -Name $o.name -Cf "RGB565_SWAPPED"
+            Convert-Image -Py $Python -Src $resized -Name $o.name -Cf "I8"
             Write-Host ("  " + (Show-Size (Join-Path $OutDir "$($o.name).c")))
         }
     }
@@ -268,7 +269,7 @@ with open(out, 'w', newline='\n') as fo:
     fo.write('#include <stdint.h>\n#include <stddef.h>\n\n')
     for name, path in pairs:
         dec = miniaudio.decode_file(path, output_format=miniaudio.SampleFormat.SIGNED16,
-                                    nchannels=1, sample_rate=16000)
+                                    nchannels=1, sample_rate=8000)
         s = dec.samples
         fo.write(f'const int16_t {name}[] = {{\n')
         for i in range(0, len(s), 16):

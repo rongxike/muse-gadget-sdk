@@ -72,7 +72,7 @@ CONFIG_ESP_TASK_WDT_EN=n
 
 # Custom partition table (dual-OTA: ota_0/ota_1 + otadata for device.ota)
 CONFIG_PARTITION_TABLE_CUSTOM=y
-CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_muse_waveshare_s3_175c.csv"
 # Move the partition table from the IDF default 0x8000 to 0x10000. A Secure Boot
 # V2 bootloader (release builds) grows past the 0x6000 ceiling at 0x8000; the
 # table must sit higher. dev and release share this geometry so dev builds
